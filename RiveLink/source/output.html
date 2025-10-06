@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+	
+	<head>
+		<style>
+			/* Default widget style to make output match the bouding box */
+			html, body {
+				background: none;
+				margin: 0;
+				padding: 0;
+				height: 100%;
+			}
+
+			/* Add your custom styles here */
+
+		</style>
+	</head>
+
+	<body>
+	<!-- Rive runtime -->
+  <script src="https://unpkg.com/@rive-app/canvas"></script>
+    <canvas id="canvas" width="500" height="500"></canvas>
+
+<script>
+    const r = new rive.Rive({
+        src: "https://cdn.rive.app/animations/vehicles.riv",
+        // OR the path to a discoverable and public Rive asset
+        // src: '/public/example.riv',
+        canvas: document.getElementById("canvas"),
+        autoplay: true,
+        // artboard: "Artboard", // Optional. If not supplied the default is selected
+        stateMachines: "bumpy",
+        onLoad: () => {
+          r.resizeDrawingSurfaceToCanvas();
+        },
+    });
+</script>
+	<!-- Your custom html goes here -->
+	<h1>Hello Singular!</h1>
+  <p>This is a basic widget template.</p>
+	
+  
+	<!-- Singular Widget Library -->
+	<script src="https://libs.singular.live/singularwidget/1.0.3/singularwidget.js"></script>
+	<script>
+		SingularWidget.init({
+		  onInit: onSingularInit,
+		  onValue: onSingularValue,
+		  onButtonClicked: onSingularButtonClicked
+		});
+	
+		function onSingularInit() {
+			console.log("onSingularInit"); 
+		}
+		
+		function onSingularValue(json) {
+			console.log("onSingularValue", json);
+		}
+
+		function onSingularButtonClicked(action) {
+			console.log("onSingularButtonClicked", action); 
+
+			/**
+			 * EXAMPLE: Send messages to the editor console
+			 * Message types: info, warning and error
+			 */
+			SingularWidget.log.info({
+				title: 'My Widget',
+				description: 'Hello Singular!'
+			});
+		}
+
+  </script>
+</body>
+</html>

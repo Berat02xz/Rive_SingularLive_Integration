@@ -1,35 +1,40 @@
-# Rive Live Graphics Controller
+# 🧩 Singular.Live Rive Widget  
 
-This project is a **experimental [Rive](https://rive.app/) controller + viewer** for **live graphics workflows** like sports broadcasts, streaming overlays, and dashboards.  
-It’s in **early development**, being tested in a **production TV sports graphics controller**, and will continue to evolve with the fast-moving Rive ecosystem.
+**Integrating Rive animations into the Singular Live platform for next-gen real-time graphics.**  
 
----
-
-## 🎯 Goals
-The aim of this project is to provide a **generic controller for Rive files**.  
-Eventually, it will:
-- Load **any `.riv` file** dynamically.  
-- Inspect its **State Machine inputs** and **ViewModel instance properties**.  
-- Automatically generate **interactive controls**:
-  - **String inputs** → text fields  
-  - **Triggers** → buttons  
-  - **Numbers, booleans, sliders, etc.** → appropriate inputs  
-
-This will allow operators to manipulate Rive graphics without writing custom code for each project.
+This project is an **experimental integration layer** that brings **Rive’s WebGL2-based rendering and ViewModel architecture** into **Singular Live widgets**.  
+The goal is to enable seamless use of `.riv` files as live, data-driven overlays directly inside the Singular Live ecosystem — complete with vector feathering, GPU acceleration, and dynamic control via Rive’s ViewModelInstances.
 
 ---
 
-## 🖥️ Architecture
-- **Controller Page**  
-  - UI for editing Rive ViewModel inputs and firing State Machine triggers.  
-  - Updates are stored in `localStorage`.  
+## 🚧 Status  
 
-- **Viewer Page**  
-  - Displays the Rive animation at full screen.  
-  - Reacts to changes made in the Controller by reading `localStorage`.  
-  - Designed to run inside **OBS Browser Source** or other broadcast software.  
-
-This separation makes it possible to run **real-time, remote-controlled graphics** in professional live production workflows.
+**In active development** — currently experimenting with:  
+- Fetching **Rive ViewModelInstance data** (inputs, properties, bindings).  
+- **Auto-generating widget UIs** inside Singular Live from Rive file structures.  
+- **Automating `.riv` uploads** and asset mapping to Singular Live widgets.  
+- Ensuring compatibility with **WebGL2 rendering** and **vector feathering** for broadcast-grade visuals.
 
 ---
+
+## 🧠 Tech Stack  
+
+- **Rive Web Runtime** (WebGL2 + WASM)  
+- **Singular Live Widget SDK**  
+- **JavaScript**  
+- **JSON UI generation system** based on Rive’s ViewModel schema & Singular widget SDK
+- 
+---
+
+## 🧱 Roadmap  
+
+- [ ] Parse and visualize Rive ViewModelInstance JSON schema  
+- [ ] Auto-generate Singular Live widget UI  
+- [ ] Automate `.riv` uploads into Singular projects  
+
+---
+
+### 🧪 Note  
+
+This project is experimental and rapidly evolving.  
 

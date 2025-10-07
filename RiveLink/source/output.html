@@ -1,88 +1,118 @@
 <!DOCTYPE html>
 <html>
-	
-	<head>
-		<style>
-			/* Default widget style to make output match the bouding box */
-			html, body {
-				background: none;
-				margin: 0;
-				padding: 0;
-				height: 100%;
-			}
 
-			/* Add your custom styles here */
+<head>
+  <style>
+    /* Zero CSS */
+    html,
+    body {
+      background: none;
+      margin: 0;
+      padding: 0;
+      height: 100%;
+    }
+  </style>
+</head>
 
-		</style>
-	</head>
-
-	<body>
-	<!-- Rive runtime -->
+<body>
+  <!-- Rive runtime -->
   <script src="https://unpkg.com/@rive-app/webgl2"></script>
-    <canvas id="canvas" width="1920" height="1080"></canvas>
+  <canvas id="canvas" width="1920" height="1080"></canvas>
 
-<script>
+  <script>
+    //custom function to find all rive ViewModelInstance properties
+    function GetAllViewModelProperties(vmi) {
+      const props = {};
+
+      let inputs = Object.values(vmi.properties);
+
+      if (!inputs) {
+        console.log("❌ Could not find any input list in ViewModelInstance");
+        console.log("Inspect keys:", Object.keys(vmi));
+        return props;
+      }
+
+      for (const input of inputs) {
+        if (!input) continue;
+
+        const name = input.name;
+
+        let type = "unknown";
+        let value = null;
+
+        if (input.type) type = input.type; 
+        
+        props[name] = { type, value };
+      }
+
+      return props;
+    }
+
     //global rive properties
     let textProp, triggerProp;
 
     //initialize rive
     const r = new rive.Rive({
-        src: "test_file.riv", // Path to your .riv file
-        // OR the path to a discoverable and public Rive asset
-        // src: '/public/example.riv',
-        canvas: document.getElementById("canvas"),
-        autoplay: true,
-        autoBind:true,
-        stateMachines: "State Machine 1", // Optional. if not written it will play the first animation found
-        onLoad: () => {
-          r.resizeDrawingSurfaceToCanvas();
-          const vmi = r.viewModelInstance;
-          if (!vmi) return console.error("❌ No ViewModelInstance found");
+      src: "test_file.riv", // Path to your .riv file
+      // OR the path to a discoverable and public Rive asset
+      // src: '/public/example.riv',
+      canvas: document.getElementById("canvas"),
+      autoplay: true,
+      autoBind: true,
+      stateMachines: "State Machine 1", // Optional. if not written it will play the first animation found
+      onLoad: () => {
+        r.resizeDrawingSurfaceToCanvas();
+        const vmi = r.viewModelInstance;
+        if (!vmi) return console.error("❌ No ViewModelInstance found");
 
-          textProp = vmi.string("Text");
-          if (!textProp) return console.error("❌ No string input found");
+        textProp = vmi.string("Text");
+        if (!textProp) return console.error("❌ No string input found");
 
-          triggerProp = vmi.trigger("Text Animate");
-          if (!triggerProp) return console.error("❌ No trigger input found");
+        triggerProp = vmi.trigger("Text Animate");
+        if (!triggerProp) return console.error("❌ No trigger input found");
 
-        },
+        const allProps = GetAllViewModelProperties(vmi);
+        console.log("✅ All ViewModelInstance properties:", allProps);
+
+
+      },
     });
-</script>
-	<!-- Your custom html goes here if any -->
-  
-	<!-- Singular Widget Library -->
-	<script src="https://libs.singular.live/singularwidget/1.0.3/singularwidget.js"></script>
-	<script>
-		SingularWidget.init({
-		  onInit: onSingularInit,
-		  onValue: onSingularValue,
-		  onButtonClicked: onSingularButtonClicked,
+  </script>
+  <!-- Your custom html goes here if any -->
+
+  <!-- Singular Widget Library -->
+  <script src="https://libs.singular.live/singularwidget/1.0.3/singularwidget.js"></script>
+  <script>
+    SingularWidget.init({
+      onInit: onSingularInit,
+      onValue: onSingularValue,
+      onButtonClicked: onSingularButtonClicked,
       onEditComp: onSingularEditComp,
     });
-    
+
     function onSingularEditComp(comp) {
       console.log("onSingularEditComp", comp);
       triggerProp.trigger();
       console.log("Fired triggerProp");
     }
 
-		function onSingularInit() {
-			console.log("onSingularInit"); 
-		}
-		
-		function onSingularValue(json) {
-			console.log("onSingularValue", json);
+    function onSingularInit() {
+      console.log("onSingularInit");
+    }
+
+    function onSingularValue(json) {
+      console.log("onSingularValue", json);
 
       //Find text field in the json
       if (json.textid && textProp) {
-        textProp.value = json.textid; 
+        textProp.value = json.textid;
         console.log("Updated textProp to:", textProp.value);
       }
 
-		}
+    }
 
-		function onSingularButtonClicked(action) {
-			console.log("onSingularButtonClicked", action); 
+    function onSingularButtonClicked(action) {
+      console.log("onSingularButtonClicked", action);
 
       //Find trigger field in the json
       if (action == "buttonid" && triggerProp) {
@@ -90,16 +120,17 @@
         console.log("Fired triggerProp");
       }
 
-			/**
-			 * EXAMPLE: Send messages to the editor console
-			 * Message types: info, warning and error
-			 */
-			SingularWidget.log.info({
-				title: 'My Widget',
-				description: 'Hello Singular!'
-			});
-		}
+      /**
+       * EXAMPLE: Send messages to the editor console
+       * Message types: info, warning and error
+       */
+      SingularWidget.log.info({
+        title: 'My Widget',
+        description: 'Hello Singular!'
+      });
+    }
 
   </script>
 </body>
+
 </html>

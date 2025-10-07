@@ -1,86 +1,63 @@
 <!DOCTYPE html>
 <html>
-
 <head>
   <style>
-    /* Zero CSS */
-    html,
-    body {
-      background: none;
-      margin: 0;
-      padding: 0;
-      height: 100%;
-    }
+    html, body { background: none; margin: 0; padding: 0; height: 100%; }
   </style>
 </head>
-
 <body>
-  <!-- Rive runtime -->
   <script src="https://unpkg.com/@rive-app/webgl2"></script>
   <canvas id="canvas" width="1920" height="1080"></canvas>
 
   <script>
-    //custom function to find all rive ViewModelInstance properties
+    // Collect all Rive property accessors
     function GetAllViewModelProperties(vmi) {
       const props = {};
-
-      let inputs = Object.values(vmi.properties);
-
-      if (!inputs) {
-        console.log("❌ Could not find any input list in ViewModelInstance");
-        console.log("Inspect keys:", Object.keys(vmi));
+      const inputs = Object.values(vmi.properties || {});
+      if (!inputs.length) {
+        console.warn("⚠️ No ViewModelInstance properties found");
         return props;
       }
 
       for (const input of inputs) {
-        if (!input) continue;
+        if (!input || !input.name) continue;
+        let accessor = null;
 
-        const name = input.name;
+        switch(input.type) {
+          case "string":   accessor = vmi.string(input.name); break;
+          case "number":   accessor = vmi.number(input.name); break;
+          case "boolean":  accessor = vmi.boolean(input.name); break;
+          case "trigger":  accessor = vmi.trigger(input.name); break;
+          default: break;
+        }
 
-        let type = "unknown";
-        let value = null;
-
-        if (input.type) type = input.type; 
-        
-        props[name] = { type, value };
+        if (accessor) {
+          props[input.name] = { type: input.type, accessor };
+        }
       }
 
+      console.log("✅ All Rive properties loaded:", props);
       return props;
     }
 
-    //global rive properties
-    let textProp, triggerProp;
+    let riveProps = {};
 
-    //initialize rive
     const r = new rive.Rive({
-      src: "test_file.riv", // Path to your .riv file
-      // OR the path to a discoverable and public Rive asset
-      // src: '/public/example.riv',
+      src: "test_file.riv",
       canvas: document.getElementById("canvas"),
       autoplay: true,
       autoBind: true,
-      stateMachines: "State Machine 1", // Optional. if not written it will play the first animation found
+      stateMachines: "State Machine 1",
       onLoad: () => {
         r.resizeDrawingSurfaceToCanvas();
         const vmi = r.viewModelInstance;
         if (!vmi) return console.error("❌ No ViewModelInstance found");
 
-        textProp = vmi.string("Text");
-        if (!textProp) return console.error("❌ No string input found");
-
-        triggerProp = vmi.trigger("Text Animate");
-        if (!triggerProp) return console.error("❌ No trigger input found");
-
-        const allProps = GetAllViewModelProperties(vmi);
-        console.log("✅ All ViewModelInstance properties:", allProps);
-
-
+        riveProps = GetAllViewModelProperties(vmi);
       },
     });
   </script>
-  <!-- Your custom html goes here if any -->
 
-  <!-- Singular Widget Library -->
   <script src="https://libs.singular.live/singularwidget/1.0.3/singularwidget.js"></script>
   <script>
     SingularWidget.init({
@@ -90,12 +67,6 @@
       onEditComp: onSingularEditComp,
     });
 
-    function onSingularEditComp(comp) {
-      console.log("onSingularEditComp", comp);
-      triggerProp.trigger();
-      console.log("Fired triggerProp");
-    }
-
     function onSingularInit() {
       console.log("onSingularInit");
     }
@@ -103,34 +74,49 @@
     function onSingularValue(json) {
       console.log("onSingularValue", json);
 
-      //Find text field in the json
-      if (json.textid && textProp) {
-        textProp.value = json.textid;
-        console.log("Updated textProp to:", textProp.value);
-      }
+      for (const [name, prop] of Object.entries(riveProps)) {
+        if (json[name] === undefined) continue;
 
+        try {
+          if (prop.type === "string") {
+            prop.accessor.value = json[name];
+            console.log(`📝 Updated string '${name}' to:`, json[name]);
+          } 
+          else if (prop.type === "number") {
+            prop.accessor.value = parseFloat(json[name]);
+            console.log(`🔢 Updated number '${name}' to:`, prop.accessor.value);
+          } 
+          else if (prop.type === "boolean") {
+            prop.accessor.value = !!json[name];
+            console.log(`🟢 Updated boolean '${name}' to:`, prop.accessor.value);
+          }
+        } catch (err) {
+          console.error(`❌ Failed to update property '${name}':`, err);
+        }
+      }
     }
 
     function onSingularButtonClicked(action) {
       console.log("onSingularButtonClicked", action);
 
-      //Find trigger field in the json
-      if (action == "buttonid" && triggerProp) {
-        triggerProp.trigger();
-        console.log("Fired triggerProp");
+      const prop = riveProps[action];
+      if (prop && prop.type === "trigger") {
+        if (typeof prop.accessor.fire === "function") prop.accessor.fire();
+        else if (typeof prop.accessor.trigger === "function") prop.accessor.trigger();
+        console.log(`🚀 Triggered '${action}'`);
+      } else {
+        console.warn(`⚠️ No trigger found for '${action}'`);
       }
 
-      /**
-       * EXAMPLE: Send messages to the editor console
-       * Message types: info, warning and error
-       */
       SingularWidget.log.info({
-        title: 'My Widget',
-        description: 'Hello Singular!'
+        title: "My Widget",
+        description: `Button clicked: ${action}`,
       });
     }
 
+    function onSingularEditComp(comp) {
+      console.log("onSingularEditComp", comp);
+    }
   </script>
 </body>
-
 </html>

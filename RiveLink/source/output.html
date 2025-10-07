@@ -14,31 +14,56 @@
   <script>
     let riveProps = {};
 
-    // Collect all Rive property accessors
-    function GetAllViewModelProperties(vmi) {
+    // Collect all Rive property accessors from all view models
+    function GetAllViewModelProperties(rive) {
       const props = {};
-      const inputs = Object.values(vmi.properties);
-      if (!inputs.length) {
-        console.warn("⚠️ No ViewModelInstance properties found");
-        return props;
-      }
-
-      for (const input of inputs) {
-        if (!input || !input.name) continue;
-        let accessor = null;
-
-        switch(input.type) {
-          case "string":   accessor = vmi.string(input.name); break;
-          case "number":   accessor = vmi.number(input.name); break;
-          case "boolean":  accessor = vmi.boolean(input.name); break;
-          case "trigger":  accessor = vmi.trigger(input.name); break;
-          default: break;
+      
+      console.log(`🔍 Found ${rive.viewModelCount} view model(s) in Rive file`);
+      
+      // Iterate through all view models
+      for (let i = 0; i < rive.viewModelCount; i++) {
+        const viewModel = rive.viewModelByIndex(i);
+        if (!viewModel) {
+          console.warn(`⚠️ ViewModel ${i} is null/undefined`);
+          continue;
+        }
+        
+        console.log(`📋 Processing ViewModel ${i}: ${viewModel.name || 'Unnamed'}`);
+        
+        // Get the default instance of this view model
+        const vmi = viewModel.defaultInstance();
+        if (!vmi) {
+          console.warn(`⚠️ No default instance found for ViewModel ${i}`);
+          continue;
         }
 
-        if (accessor) {
-          props[input.name] = { type: input.type, accessor };
+        const properties = viewModel.properties;
+        if (!properties || !properties.length) {
+          console.warn(`⚠️ No properties found in ViewModel ${i}`);
+          continue;
+        }
+
+        for (const property of properties) {
+          if (!property || !property.name) continue;
+          let accessor = null;
+
+          switch(property.type) {
+            case "string":   accessor = vmi.string(property.name); break;
+            case "number":   accessor = vmi.number(property.name); break;
+            case "boolean":  accessor = vmi.boolean(property.name); break;
+            case "trigger":  accessor = vmi.trigger(property.name); break;
+            default: break;
+          }
+
+          if (accessor) {
+            // Add to global props using original property name
+            props[property.name] = { type: property.type, accessor };
+            console.log(`  ✅ Added property: ${property.name} (${property.type}) from VM${i}`);
+          }
         }
       }
+      
+      console.log("✅ Collected all Rive properties:", props);
       return props;
     }
 
@@ -52,13 +77,14 @@
       onLoad: () => {
         console.log("✅ Rive loaded");
         r.resizeDrawingSurfaceToCanvas();
-        const vmi = r.viewModelInstance;
-        if (!vmi) {
-          console.error("❌ No ViewModelInstance found");
+        
+        // Check for view models
+        if (r.viewModelCount === 0) {
+          console.error("❌ No ViewModels found in Rive file");
           return;
         }
 
-        riveProps = GetAllViewModelProperties(vmi);
+        riveProps = GetAllViewModelProperties(r);
         
         // Log UI definition on console log for now
         generateModelForManualSetup();

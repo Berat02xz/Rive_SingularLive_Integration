@@ -7,13 +7,17 @@
 </head>
 <body>
   <script src="https://unpkg.com/@rive-app/webgl2"></script>
+
   <canvas id="canvas" width="1920" height="1080"></canvas>
 
+  <script src="https://libs.singular.live/singularwidget/1.0.3/singularwidget.js"></script>
   <script>
+    let riveProps = {};
+
     // Collect all Rive property accessors
     function GetAllViewModelProperties(vmi) {
       const props = {};
-      const inputs = Object.values(vmi.properties || {});
+      const inputs = Object.values(vmi.properties);
       if (!inputs.length) {
         console.warn("⚠️ No ViewModelInstance properties found");
         return props;
@@ -35,13 +39,10 @@
           props[input.name] = { type: input.type, accessor };
         }
       }
-
-      console.log("✅ All Rive properties loaded:", props);
       return props;
     }
 
-    let riveProps = {};
-
+    // Initialize Rive
     const r = new rive.Rive({
       src: "test_file.riv",
       canvas: document.getElementById("canvas"),
@@ -49,17 +50,57 @@
       autoBind: true,
       stateMachines: "State Machine 1",
       onLoad: () => {
+        console.log("✅ Rive loaded");
         r.resizeDrawingSurfaceToCanvas();
         const vmi = r.viewModelInstance;
-        if (!vmi) return console.error("❌ No ViewModelInstance found");
+        if (!vmi) {
+          console.error("❌ No ViewModelInstance found");
+          return;
+        }
 
         riveProps = GetAllViewModelProperties(vmi);
+        
+        // Log UI definition on console log for now
+        generateModelForManualSetup();
       },
     });
-  </script>
 
-  <script src="https://libs.singular.live/singularwidget/1.0.3/singularwidget.js"></script>
-  <script>
+    // Generate model structure for manual setup in SingularLive
+    function generateModelForManualSetup() {
+      const fields = [];
+      const groups = [];
+
+      // Create fields based on Rive properties
+      for (const [name, prop] of Object.entries(riveProps)) {        
+        const field = {
+          id: name,
+          type: prop.type === "trigger" ? "button" : prop.type === "string" ? "text" : prop.type,
+          title: name.charAt(0).toUpperCase() + name.slice(1),
+          defaultValue: prop.type === "trigger" ? "" : prop.accessor.value || (prop.type === "number" ? 0 : prop.type === "boolean" ? false : "")
+        };
+        fields.push(field);
+      }
+
+      // Create a single group if we have fields
+      if (fields.length > 0) {
+        groups.push({
+          id: "riveControlsGroup",
+          title: "Rive Controls",
+          width: "double",
+          toolTip: "Control your Rive animation properties",
+          childIds: fields.map(f => f.id)
+        });
+      }
+
+      const model = { model: { fields, groups } };
+
+      console.log("\n📋 COPY THIS JSON TO WIDGET MANAGER UI DEFINITION:");
+      console.log("=" + "=".repeat(60));
+      console.log(JSON.stringify(model, null, 2));
+      console.log("=" + "=".repeat(60));
+    }
+
+    // Initialize SingularWidget
     SingularWidget.init({
       onInit: onSingularInit,
       onValue: onSingularValue,
@@ -101,22 +142,19 @@
 
       const prop = riveProps[action];
       if (prop && prop.type === "trigger") {
-        if (typeof prop.accessor.fire === "function") prop.accessor.fire();
-        else if (typeof prop.accessor.trigger === "function") prop.accessor.trigger();
+        if (typeof prop.accessor.trigger === "function") prop.accessor.trigger();
         console.log(`🚀 Triggered '${action}'`);
       } else {
         console.warn(`⚠️ No trigger found for '${action}'`);
       }
 
-      SingularWidget.log.info({
-        title: "My Widget",
-        description: `Button clicked: ${action}`,
-      });
+
     }
 
     function onSingularEditComp(comp) {
       console.log("onSingularEditComp", comp);
     }
+    
   </script>
 </body>
 </html>

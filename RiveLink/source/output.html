@@ -154,30 +154,81 @@
     // Generate JSON for Widget Manager
     function generateModelForManualSetup() {
       const fields = [];
+      const groupedProperties = {}; // Group properties by view model
       
       for (const [name, prop] of Object.entries(riveProps)) {
         // Extract just the property name (after the last underscore if it exists)
         // e.g., "property of View Model 3_TEST" -> "TEST"
         const displayName = name.includes('_') ? name.split('_').pop() : name;
         
-        fields.push({
+        // Determine which view model this property belongs to
+        let viewModelName = "Root View Model"; // Default for root properties
+        if (name.includes('_')) {
+          // Extract the view model part (everything before the last underscore)
+          const parts = name.split('_');
+          parts.pop(); // Remove the property name
+          viewModelName = parts.join('_');
+          // Clean up the name: "property of View Model 2" -> "View Model 2"
+          viewModelName = viewModelName.replace(/^property of /i, '');
+        }
+        
+        let fieldType = prop.type;
+        let defaultValue = "";
+        
+        // Map Rive types to SingularLive field types
+        if (prop.type === "trigger") {
+          fieldType = "button";
+        } else if (prop.type === "string") {
+          fieldType = "text";
+          defaultValue = prop.accessor.value || "";
+        } else if (prop.type === "number") {
+          defaultValue = prop.accessor.value || 0;
+        } else if (prop.type === "boolean") {
+          defaultValue = prop.accessor.value || false;
+        } else if (prop.type === "color") {
+          // Color stays as "color" type in SingularLive
+          const colorValue = prop.accessor.value;
+          // Convert from Rive's ARGB integer format to {r, g, b, a}
+          defaultValue = {
+            r: (colorValue >> 16) & 0xFF,
+            g: (colorValue >> 8) & 0xFF,
+            b: colorValue & 0xFF,
+            a: ((colorValue >> 24) & 0xFF) / 255
+          };
+        }
+        
+        const field = {
           id: name,
-          type: prop.type === "trigger" ? "button" : prop.type === "string" ? "text" : prop.type,
+          type: fieldType,
           title: displayName.charAt(0).toUpperCase() + displayName.slice(1),
-          defaultValue: prop.type === "trigger" ? "" : prop.accessor.value || (prop.type === "number" ? 0 : prop.type === "boolean" ? false : "")
+          defaultValue: defaultValue
+        };
+        
+        fields.push(field);
+        
+        // Group by view model
+        if (!groupedProperties[viewModelName]) {
+          groupedProperties[viewModelName] = [];
+        }
+        groupedProperties[viewModelName].push(name);
+      }
+
+      // Create groups for each view model
+      const groups = [];
+      for (const [vmName, childIds] of Object.entries(groupedProperties)) {
+        groups.push({
+          id: vmName.replace(/\s+/g, '_').toLowerCase() + "_group",
+          title: vmName,
+          width: "double",
+          toolTip: `Properties from ${vmName}`,
+          childIds: childIds
         });
       }
 
       const model = { 
         model: { 
           fields, 
-          groups: [{
-            id: "riveControlsGroup",
-            title: "Rive Controls",
-            width: "double",
-            toolTip: "Control your Rive animation properties",
-            childIds: fields.map(f => f.id)
-          }]
+          groups
         }
       };
 
@@ -228,6 +279,20 @@
             if (newValue !== currentValue) {
               prop.accessor.value = newValue;
               console.log(`🟢 ${name}: ${currentValue} → ${newValue}`);
+            }
+          }
+          else if (prop.type === "color") {
+            const colorData = json[name];
+            // SingularLive sends color as {r, g, b, a} object
+            if (colorData && typeof colorData === 'object' && 'r' in colorData) {
+              const r = Math.round(colorData.r);
+              const g = Math.round(colorData.g);
+              const b = Math.round(colorData.b);
+              const a = colorData.a !== undefined ? Math.round(colorData.a * 255) : 255;
+              
+              // Set using rgba method
+              prop.accessor.rgba(r, g, b, a);
+              console.log(`🎨 ${name}: rgba(${r}, ${g}, ${b}, ${a})`);
             }
           }
         } catch (err) {

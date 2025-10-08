@@ -13,120 +13,153 @@
   <script src="https://libs.singular.live/singularwidget/1.0.3/singularwidget.js"></script>
   <script>
     let riveProps = {};
+    let r = null;
 
-    // Collect all Rive property accessors from all view models
+    // Simple, non-recursive property collection
+    function collectProperties(vmi, viewModel, props, pathPrefix = "") {
+      const properties = viewModel.properties;
+      if (!properties || !properties.length) return;
+
+      for (const property of properties) {
+        if (!property || !property.name) continue;
+        
+        // Skip nested view model properties - they're just references, not actual data
+        if (property.type === "viewModel") {
+          console.log(`  🔗 Skipping nested VM reference: ${property.name}`);
+          continue;
+        }
+        
+        // Build the path for accessing this property
+        const propertyPath = pathPrefix ? `${pathPrefix}/${property.name}` : property.name;
+        
+        // Create accessor for this property
+        let accessor = null;
+        try {
+          switch(property.type) {
+            case "string":   accessor = vmi.string(propertyPath); break;
+            case "number":   accessor = vmi.number(propertyPath); break;
+            case "boolean":  accessor = vmi.boolean(propertyPath); break;
+            case "trigger":  accessor = vmi.trigger(propertyPath); break;
+            case "color":    accessor = vmi.color(propertyPath); break;
+            case "enum":     accessor = vmi.enum(propertyPath); break;
+          }
+        } catch (err) {
+          console.error(`  ❌ Error accessing '${propertyPath}':`, err.message);
+        }
+
+        if (accessor) {
+          // Use safe key name for SingularLive (replace / with _)
+          const propKey = propertyPath.replace(/\//g, '_');
+          props[propKey] = { 
+            type: property.type, 
+            accessor,
+            path: propertyPath
+          };
+          console.log(`  ✅ ${propKey} (${property.type})`);
+        }
+      }
+    }
+
+    // Collect all properties from all view models
     function GetAllViewModelProperties(rive) {
       const props = {};
       
-      console.log(`🔍 Found ${rive.viewModelCount} view model(s) in Rive file`);
+      console.log(`🔍 Found ${rive.viewModelCount} view model(s)`);
       
-      // Iterate through all view models
-      for (let i = 0; i < rive.viewModelCount; i++) {
-        const viewModel = rive.viewModelByIndex(i);
-        if (!viewModel) {
-          console.warn(`⚠️ ViewModel ${i} is null/undefined`);
-          continue;
-        }
-        
-        console.log(`📋 Processing ViewModel ${i}: ${viewModel.name || 'Unnamed'}`);
-        
-        // Get the default instance of this view model
-        const vmi = viewModel.defaultInstance();
-        if (!vmi) {
-          console.warn(`⚠️ No default instance found for ViewModel ${i}`);
-          continue;
-        }
-
-        const properties = viewModel.properties;
-        if (!properties || !properties.length) {
-          console.warn(`⚠️ No properties found in ViewModel ${i}`);
-          continue;
-        }
-
-        for (const property of properties) {
-          if (!property || !property.name) continue;
-          let accessor = null;
-
-          switch(property.type) {
-            case "string":   accessor = vmi.string(property.name); break;
-            case "number":   accessor = vmi.number(property.name); break;
-            case "boolean":  accessor = vmi.boolean(property.name); break;
-            case "trigger":  accessor = vmi.trigger(property.name); break;
-            default: break;
-          }
-
-          if (accessor) {
-            // Add to global props using original property name
-            props[property.name] = { type: property.type, accessor };
-            console.log(`  ✅ Added property: ${property.name} (${property.type}) from VM${i}`);
+      const vmi = rive.viewModelInstance;
+      if (!vmi) {
+        console.error("❌ No view model instance - autoBind must be true");
+        return props;
+      }
+      
+      const defaultVM = rive.defaultViewModel();
+      if (!defaultVM) {
+        console.error("❌ No default view model");
+        return props;
+      }
+      
+      console.log(`\n📋 Root VM: ${defaultVM.name || 'Unnamed'}`);
+      
+      // First: Collect properties from root view model
+      collectProperties(vmi, defaultVM, props, "");
+      
+      // Second: Find nested VM properties and collect from those VMs
+      const rootProperties = defaultVM.properties;
+      for (const prop of rootProperties) {
+        if (prop && prop.type === "viewModel" && prop.name) {
+          console.log(`\n🔗 Found nested VM property: "${prop.name}"`);
+          
+          // Find the corresponding view model definition
+          for (let i = 0; i < rive.viewModelCount; i++) {
+            const vm = rive.viewModelByIndex(i);
+            if (vm && vm !== defaultVM) {
+              console.log(`📋 Nested VM: ${vm.name || 'Unnamed'}`);
+              // Collect properties using the nested property name as path prefix
+              collectProperties(vmi, vm, props, prop.name);
+              break; // Only one nested VM per property
+            }
           }
         }
       }
       
-      console.log("✅ Collected all Rive properties:", props);
+      console.log(`\n✅ Total properties collected: ${Object.keys(props).length}`);
       return props;
     }
 
     // Initialize Rive
-    const r = new rive.Rive({
+    r = new rive.Rive({
       src: "test_file.riv",
       canvas: document.getElementById("canvas"),
       autoplay: true,
       autoBind: true,
       stateMachines: "State Machine 1",
       onLoad: () => {
-        console.log("✅ Rive loaded");
+        console.log("✅ Rive loaded\n");
         r.resizeDrawingSurfaceToCanvas();
         
-        // Check for view models
         if (r.viewModelCount === 0) {
-          console.error("❌ No ViewModels found in Rive file");
+          console.error("❌ No view models in file");
           return;
         }
 
         riveProps = GetAllViewModelProperties(r);
-        
-        // Log UI definition on console log for now
         generateModelForManualSetup();
       },
     });
 
-    // Generate model structure for manual setup in SingularLive
+    // Generate JSON for Widget Manager
     function generateModelForManualSetup() {
       const fields = [];
-      const groups = [];
-
-      // Create fields based on Rive properties
+      
       for (const [name, prop] of Object.entries(riveProps)) {        
-        const field = {
+        fields.push({
           id: name,
           type: prop.type === "trigger" ? "button" : prop.type === "string" ? "text" : prop.type,
           title: name.charAt(0).toUpperCase() + name.slice(1),
           defaultValue: prop.type === "trigger" ? "" : prop.accessor.value || (prop.type === "number" ? 0 : prop.type === "boolean" ? false : "")
-        };
-        fields.push(field);
-      }
-
-      // Create a single group if we have fields
-      if (fields.length > 0) {
-        groups.push({
-          id: "riveControlsGroup",
-          title: "Rive Controls",
-          width: "double",
-          toolTip: "Control your Rive animation properties",
-          childIds: fields.map(f => f.id)
         });
       }
 
-      const model = { model: { fields, groups } };
+      const model = { 
+        model: { 
+          fields, 
+          groups: [{
+            id: "riveControlsGroup",
+            title: "Rive Controls",
+            width: "double",
+            toolTip: "Control your Rive animation properties",
+            childIds: fields.map(f => f.id)
+          }]
+        }
+      };
 
-      console.log("\n📋 COPY THIS JSON TO WIDGET MANAGER UI DEFINITION:");
-      console.log("=" + "=".repeat(60));
+      console.log("\n📋 COPY TO WIDGET MANAGER:");
+      console.log("=".repeat(60));
       console.log(JSON.stringify(model, null, 2));
-      console.log("=" + "=".repeat(60));
+      console.log("=".repeat(60));
     }
 
-    // Initialize SingularWidget
+    // SingularLive Widget Integration
     SingularWidget.init({
       onInit: onSingularInit,
       onValue: onSingularValue,
@@ -135,11 +168,11 @@
     });
 
     function onSingularInit() {
-      console.log("onSingularInit");
+      console.log("SingularWidget initialized");
     }
 
     function onSingularValue(json) {
-      console.log("onSingularValue", json);
+      console.log("Received values:", json);
 
       for (const [name, prop] of Object.entries(riveProps)) {
         if (json[name] === undefined) continue;
@@ -147,34 +180,30 @@
         try {
           if (prop.type === "string") {
             prop.accessor.value = json[name];
-            console.log(`📝 Updated string '${name}' to:`, json[name]);
+            console.log(`📝 ${name} = "${json[name]}"`);
           } 
           else if (prop.type === "number") {
             prop.accessor.value = parseFloat(json[name]);
-            console.log(`🔢 Updated number '${name}' to:`, prop.accessor.value);
+            console.log(`🔢 ${name} = ${prop.accessor.value}`);
           } 
           else if (prop.type === "boolean") {
             prop.accessor.value = !!json[name];
-            console.log(`🟢 Updated boolean '${name}' to:`, prop.accessor.value);
+            console.log(`🟢 ${name} = ${prop.accessor.value}`);
           }
         } catch (err) {
-          console.error(`❌ Failed to update property '${name}':`, err);
+          console.error(`❌ Failed to update '${name}':`, err.message);
         }
       }
     }
 
     function onSingularButtonClicked(action) {
-      console.log("onSingularButtonClicked", action);
-
       const prop = riveProps[action];
       if (prop && prop.type === "trigger") {
-        if (typeof prop.accessor.trigger === "function") prop.accessor.trigger();
-        console.log(`🚀 Triggered '${action}'`);
-      } else {
-        console.warn(`⚠️ No trigger found for '${action}'`);
+        if (typeof prop.accessor.trigger === "function") {
+          prop.accessor.trigger();
+          console.log(`🚀 Triggered: ${action}`);
+        }
       }
-
-
     }
 
     function onSingularEditComp(comp) {

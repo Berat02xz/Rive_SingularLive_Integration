@@ -83,21 +83,45 @@
       // First: Collect properties from root view model
       collectProperties(vmi, defaultVM, props, "");
       
-      // Second: Find nested VM properties and collect from those VMs
+      // Second: Find nested VM properties and collect from ALL nested VMs
       const rootProperties = defaultVM.properties;
+      const processedVMs = new Set([defaultVM]); // Track which VMs we've processed
+      
       for (const prop of rootProperties) {
         if (prop && prop.type === "viewModel" && prop.name) {
           console.log(`\n🔗 Found nested VM property: "${prop.name}"`);
           
-          // Find the corresponding view model definition
+          // Try to match this property to a specific view model
+          // The property name might contain the VM name (e.g., "property of View Model 2")
+          let matchedVM = null;
+          
           for (let i = 0; i < rive.viewModelCount; i++) {
             const vm = rive.viewModelByIndex(i);
-            if (vm && vm !== defaultVM) {
-              console.log(`📋 Nested VM: ${vm.name || 'Unnamed'}`);
-              // Collect properties using the nested property name as path prefix
-              collectProperties(vmi, vm, props, prop.name);
-              break; // Only one nested VM per property
+            if (!vm || processedVMs.has(vm)) continue;
+            
+            // Check if the property name contains this VM's name
+            if (vm.name && prop.name.includes(vm.name)) {
+              matchedVM = vm;
+              break;
             }
+          }
+          
+          // If no match by name, just take the next unprocessed VM
+          if (!matchedVM) {
+            for (let i = 0; i < rive.viewModelCount; i++) {
+              const vm = rive.viewModelByIndex(i);
+              if (vm && !processedVMs.has(vm)) {
+                matchedVM = vm;
+                break;
+              }
+            }
+          }
+          
+          if (matchedVM) {
+            console.log(`📋 Nested VM: ${matchedVM.name || 'Unnamed'}`);
+            processedVMs.add(matchedVM);
+            // Collect properties using the nested property name as path prefix
+            collectProperties(vmi, matchedVM, props, prop.name);
           }
         }
       }

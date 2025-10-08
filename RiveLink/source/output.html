@@ -207,16 +207,28 @@
 
         try {
           if (prop.type === "string") {
-            prop.accessor.value = json[name];
-            console.log(`📝 ${name} = "${json[name]}"`);
+            const newValue = json[name];
+            const currentValue = prop.accessor.value;
+            if (newValue !== currentValue) {
+              prop.accessor.value = newValue;
+              console.log(`📝 ${name}: "${currentValue}" → "${newValue}"`);
+            }
           } 
           else if (prop.type === "number") {
-            prop.accessor.value = parseFloat(json[name]);
-            console.log(`🔢 ${name} = ${prop.accessor.value}`);
+            const newValue = parseFloat(json[name]);
+            const currentValue = prop.accessor.value;
+            if (newValue !== currentValue) {
+              prop.accessor.value = newValue;
+              console.log(`🔢 ${name}: ${currentValue} → ${newValue}`);
+            }
           } 
           else if (prop.type === "boolean") {
-            prop.accessor.value = !!json[name];
-            console.log(`🟢 ${name} = ${prop.accessor.value}`);
+            const newValue = !!json[name];
+            const currentValue = prop.accessor.value;
+            if (newValue !== currentValue) {
+              prop.accessor.value = newValue;
+              console.log(`🟢 ${name}: ${currentValue} → ${newValue}`);
+            }
           }
         } catch (err) {
           console.error(`❌ Failed to update '${name}':`, err.message);

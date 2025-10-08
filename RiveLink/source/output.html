@@ -155,11 +155,15 @@
     function generateModelForManualSetup() {
       const fields = [];
       
-      for (const [name, prop] of Object.entries(riveProps)) {        
+      for (const [name, prop] of Object.entries(riveProps)) {
+        // Extract just the property name (after the last underscore if it exists)
+        // e.g., "property of View Model 3_TEST" -> "TEST"
+        const displayName = name.includes('_') ? name.split('_').pop() : name;
+        
         fields.push({
           id: name,
           type: prop.type === "trigger" ? "button" : prop.type === "string" ? "text" : prop.type,
-          title: name.charAt(0).toUpperCase() + name.slice(1),
+          title: displayName.charAt(0).toUpperCase() + displayName.slice(1),
           defaultValue: prop.type === "trigger" ? "" : prop.accessor.value || (prop.type === "number" ? 0 : prop.type === "boolean" ? false : "")
         });
       }

@@ -149,6 +149,34 @@
       return props;
     }
 
+    function listAllArtboards(riveInstance) {
+      console.log("\n📋 Available Artboards:");
+      console.log("=" + "=".repeat(60));
+      
+      try {
+        const file = riveInstance.file;
+        if (!file) {
+          console.log("⚠️ Cannot access Rive file object");
+          return;
+        }
+        
+        const artboardCount = file.artboardCount();  // Call it as a function
+        console.log(`Total artboards: ${artboardCount}\n`);
+        
+        for (let i = 0; i < artboardCount; i++) {
+          const artboard = file.artboardByIndex(i);  // This might also need ()
+          if (artboard) {
+            const artboardName = typeof artboard.name === 'function' ? artboard.name() : artboard.name;
+            const isDefault = i === 0 ? " (default)" : "";
+            console.log(`  ${i + 1}. "${artboardName}"${isDefault}`);
+          }
+        }
+        
+        console.log("=" + "=".repeat(60) + "\n");
+      } catch (err) {
+        console.error("❌ Error listing artboards:", err);
+      }
+    }
     
     // Initialize Rive
     let ARTBOARD_NAME = ""; 
@@ -162,7 +190,8 @@
       autoBind: true,
       stateMachines: STATE_MACHINE_NAME,
       onLoad: () => {
-        console.log("Rive loaded\n");        
+        console.log("Rive loaded\n");
+        listAllArtboards(r);
         console.log(`✅ Active artboard: ${r.activeArtboard?.name || 'default'}`);
         
         resizeCanvas();
@@ -215,7 +244,7 @@
       const groupedProperties = {};
       
       // Get available artboards dynamically
-      const availableArtboards = ["(default)"];
+      const availableArtboards = [];
       try {
         const file = r.file;
         if (file) {
@@ -262,7 +291,8 @@
             { id: "3", title: "Fit Width" },
             { id: "4", title: "Fit Height" },
             { id: "5", title: "Scale Down" },
-            { id: "6", title: "None" }
+            { id: "6", title: "Layout" },
+            { id: "7", title: "None" }
           ]
         }
       ];
@@ -416,20 +446,18 @@
       // Check for artboard change
       if (json.rive_artboard !== undefined) {
         const artboardIndex = parseInt(json.rive_artboard);
-        if (artboardIndex === 0) {
-          newArtboard = ""; // Default artboard
-        } else {
-          try {
-            const file = r.file;
-            if (file) {
-              const artboard = file.artboardByIndex(artboardIndex - 1);
-              if (artboard) {
-                newArtboard = typeof artboard.name === 'function' ? artboard.name() : artboard.name;
-              }
+        try {
+          const file = r.file;
+          if (file && artboardIndex >= 0 && artboardIndex < file.artboardCount()) {
+            const artboard = file.artboardByIndex(artboardIndex);
+            if (artboard) {
+              newArtboard = typeof artboard.name === 'function' ? artboard.name() : artboard.name;
             }
-          } catch (err) {
-            console.error("Error getting artboard name:", err);
+          } else {
+            console.warn(`Invalid artboard index: ${artboardIndex}`);
           }
+        } catch (err) {
+          console.error("Error getting artboard name:", err);
         }
         
         if (newArtboard !== ARTBOARD_NAME) {
@@ -441,7 +469,7 @@
       
       // Check for layout change
       if (json.rive_layout !== undefined) {
-        const layoutOptions = ["contain", "cover", "fill", "fitWidth", "fitHeight", "scaleDown", "none"];
+        const layoutOptions = ["contain", "cover", "fill", "fitWidth", "fitHeight", "scaleDown", "layout", "none"];
         const layoutIndex = parseInt(json.rive_layout);
         newLayout = layoutOptions[layoutIndex] || "contain";
         

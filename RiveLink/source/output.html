@@ -35,10 +35,7 @@
         r.resizeDrawingSurfaceToCanvas();
       }
     }
-    
-    // Initial resize
-    resizeCanvas();
-    
+
     // Listen for window resize events
     window.addEventListener('resize', resizeCanvas);
 
@@ -152,41 +149,11 @@
       return props;
     }
 
-    // Function to list all available artboards
-    function listAllArtboards(riveInstance) {
-      console.log("\n📋 Available Artboards:");
-      console.log("=" + "=".repeat(60));
-      
-      try {
-        const file = riveInstance.file;
-        if (!file) {
-          console.log("⚠️ Cannot access Rive file object");
-          return;
-        }
-        
-        const artboardCount = file.artboardCount();  // Call it as a function
-        console.log(`Total artboards: ${artboardCount}\n`);
-        
-        for (let i = 0; i < artboardCount; i++) {
-          const artboard = file.artboardByIndex(i);  // This might also need ()
-          if (artboard) {
-            const artboardName = typeof artboard.name === 'function' ? artboard.name() : artboard.name;
-            const isDefault = i === 0 ? " (default)" : "";
-            console.log(`  ${i + 1}. "${artboardName}"${isDefault}`);
-          }
-        }
-        
-        console.log("=" + "=".repeat(60) + "\n");
-      } catch (err) {
-        console.error("❌ Error listing artboards:", err);
-      }
-    }
-
+    
     // Initialize Rive
-    // CONFIGURATION: Specify artboard and state machine names here
-    let ARTBOARD_NAME = ""; // Dynamically set by SingularLive
-    const STATE_MACHINE_NAME = "State Machine 1"; // Name of your state machine
-    let LAYOUT_FIT = "contain"; // Default layout fit mode
+    let ARTBOARD_NAME = ""; 
+    const STATE_MACHINE_NAME = "State Machine 1"; 
+    let LAYOUT_FIT = "contain";
     
     const riveConfig = {
       src: "test_file.riv",
@@ -195,27 +162,23 @@
       autoBind: true,
       stateMachines: STATE_MACHINE_NAME,
       onLoad: () => {
-        console.log("✅ Rive loaded\n");
+        console.log("Rive loaded\n");        
+        console.log(`✅ Active artboard: ${r.activeArtboard?.name || 'default'}`);
         
-        // List all available artboards
-        listAllArtboards(r);
-        
-        console.log(`📐 Active artboard: ${r.activeArtboard?.name || 'default'}`);
         resizeCanvas();
         
         if (r.viewModelCount === 0) {
-          console.error("❌ No view models found in this artboard");
-          console.log("💡 Make sure your artboard has a view model assigned in the Rive editor");
+          console.error("No view models found in this artboard");
           return;
         }
 
         riveProps = GetAllViewModelProperties(r);
         
-        if (Object.keys(riveProps).length === 0) {
-          console.warn("⚠️ No properties found. Make sure the view model has properties defined.");
+        if (Object.keys(riveProps).length == 0) {
+          console.warn("No properties found. Make sure the view model has properties defined.");
         }
         
-        generateModelForManualSetup();
+        generateUIModel();
         
         // Apply pending initial values if they exist
         if (window.pendingInitialValues) {
@@ -247,7 +210,7 @@
     r = new rive.Rive(riveConfig);
 
     // Generate JSON for Widget Manager
-    function generateModelForManualSetup() {
+    function generateUIModel() {
       const fields = [];
       const groupedProperties = {};
       
@@ -578,13 +541,13 @@
           } else {
             console.log(`✅ Reloaded with ${Object.keys(riveProps).length} properties`);
             // Generate new UI JSON for the new artboard's view models
-            generateModelForManualSetup();
+            generateUIModel();
             
             // Apply pending initial values if they exist (from onInit)
             if (window.pendingInitialValues) {
               console.log("🎬 Applying pending initial values after reload...");
               const initialValues = window.pendingInitialValues;
-              window.pendingInitialValues = null; // Clear before processing to avoid loops
+              window.pendingInitialValues = null; 
               onSingularValue(initialValues);
             }
           }
@@ -613,7 +576,6 @@
           console.log(`Triggered: ${action}`);
         }
       }
-      // No need to handle rive_apply_settings anymore - changes are automatic
     }
 
     function onSingularEditComp(comp) {

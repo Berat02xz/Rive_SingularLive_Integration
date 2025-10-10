@@ -2,16 +2,45 @@
 <html>
 <head>
   <style>
-    html, body { background: none; margin: 0; padding: 0; height: 100%; }
+    html, body { 
+      background: none; 
+      margin: 0; 
+      padding: 0; 
+      height: 100%; 
+      width: 100%;
+      overflow: hidden;
+    }
+    #canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
   </style>
 </head>
 <body>
   <script src="https://unpkg.com/@rive-app/webgl2"></script>
-  <canvas id="canvas" width="1920" height="1080"></canvas>
+  <canvas id="canvas"></canvas>
   <script src="https://libs.singular.live/singularwidget/1.0.3/singularwidget.js"></script>
   <script>
     let riveProps = {};
     let r = null;
+    
+    // Function to resize canvas to match window size
+    function resizeCanvas() {
+      const canvas = document.getElementById("canvas");
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      
+      if (r) {
+        r.resizeDrawingSurfaceToCanvas();
+      }
+    }
+    
+    // Initial resize
+    resizeCanvas();
+    
+    // Listen for window resize events
+    window.addEventListener('resize', resizeCanvas);
 
     // Get all properties from a view model 
     function collectProperties(vmi, viewModel, props, pathPrefix = "") {
@@ -172,7 +201,7 @@
         listAllArtboards(r);
         
         console.log(`📐 Active artboard: ${r.activeArtboard?.name || 'default'}`);
-        r.resizeDrawingSurfaceToCanvas();
+        resizeCanvas();
         
         if (r.viewModelCount === 0) {
           console.error("❌ No view models found in this artboard");
@@ -535,7 +564,7 @@
           
           console.log(`📐 Active artboard: ${r.activeArtboard?.name || 'default'}`);
           console.log(`📐 Active layout: ${layoutFit}`);
-          r.resizeDrawingSurfaceToCanvas();
+          resizeCanvas();
           
           if (r.viewModelCount === 0) {
             console.error("❌ No view models found in this artboard");

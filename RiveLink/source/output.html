@@ -11,11 +11,12 @@
   <canvas id="canvas" width="1920" height="1080"></canvas>
 
   <script src="https://libs.singular.live/singularwidget/1.0.3/singularwidget.js"></script>
+  
   <script>
     let riveProps = {};
     let r = null;
 
-    // Simple, non-recursive property collection
+    // Get all properties from a view model 
     function collectProperties(vmi, viewModel, props, pathPrefix = "") {
       const properties = viewModel.properties;
       if (!properties || !properties.length) return;
@@ -23,9 +24,9 @@
       for (const property of properties) {
         if (!property || !property.name) continue;
         
-        // Skip nested view model properties - they're just references, not actual data
+        // Skip nested view model properties - they're just references not actual data
         if (property.type === "viewModel") {
-          console.log(`  🔗 Skipping nested VM reference: ${property.name}`);
+          console.log(`Skipping nested VM reference: ${property.name}`);
           continue;
         }
         
@@ -44,18 +45,18 @@
             case "enum":     accessor = vmi.enum(propertyPath); break;
           }
         } catch (err) {
-          console.error(`  ❌ Error accessing '${propertyPath}':`, err.message);
+          console.error(`❌ Error accessing '${propertyPath}':`, err.message);
         }
 
         if (accessor) {
-          // Use safe key name for SingularLive (replace / with _)
+          // Use path with / for Rive access, but store with _ for SingularLive ID compatibility
           const propKey = propertyPath.replace(/\//g, '_');
           props[propKey] = { 
             type: property.type, 
             accessor,
-            path: propertyPath
+            path: propertyPath  // Keep original path for Rive
           };
-          console.log(`  ✅ ${propKey} (${property.type})`);
+          console.log(`✅ ${propKey} (${property.type}) [rive path: ${propertyPath}]`);
         }
       }
     }
@@ -64,32 +65,27 @@
     function GetAllViewModelProperties(rive) {
       const props = {};
       
-      console.log(`🔍 Found ${rive.viewModelCount} view model(s)`);
+      console.log(`Found ${rive.viewModelCount} view model(s)`);
       
       const vmi = rive.viewModelInstance;
-      if (!vmi) {
-        console.error("❌ No view model instance - autoBind must be true");
-        return props;
-      }
       
       const defaultVM = rive.defaultViewModel();
       if (!defaultVM) {
         console.error("❌ No default view model");
         return props;
       }
-      
-      console.log(`\n📋 Root VM: ${defaultVM.name || 'Unnamed'}`);
+      console.log(`Root VM: ${defaultVM.name || 'Unnamed'}`);
       
       // First: Collect properties from root view model
       collectProperties(vmi, defaultVM, props, "");
       
       // Second: Find nested VM properties and collect from ALL nested VMs
       const rootProperties = defaultVM.properties;
-      const processedVMs = new Set([defaultVM]); // Track which VMs we've processed
+      const processedVMs = new Set([defaultVM]); 
       
       for (const prop of rootProperties) {
         if (prop && prop.type === "viewModel" && prop.name) {
-          console.log(`\n🔗 Found nested VM property: "${prop.name}"`);
+          console.log(`\n Found nested VM property: "${prop.name}"`);
           
           // Try to match this property to a specific view model
           // The property name might contain the VM name (e.g., "property of View Model 2")
@@ -118,9 +114,9 @@
           }
           
           if (matchedVM) {
-            console.log(`📋 Nested VM: ${matchedVM.name || 'Unnamed'}`);
+            console.log(`Nested VM: ${matchedVM.name || 'Unnamed'}`);
             processedVMs.add(matchedVM);
-            // Collect properties using the nested property name as path prefix
+            // collect nested VM properties with updated path prefix
             collectProperties(vmi, matchedVM, props, prop.name);
           }
         }
@@ -132,10 +128,11 @@
 
     // Initialize Rive
     r = new rive.Rive({
-      src: "test_file.riv",
+      src: "test_file2.riv",
       canvas: document.getElementById("canvas"),
       autoplay: true,
       autoBind: true,
+      artboard: "Main",
       stateMachines: "State Machine 1",
       onLoad: () => {
         console.log("✅ Rive loaded\n");
@@ -154,21 +151,18 @@
     // Generate JSON for Widget Manager
     function generateModelForManualSetup() {
       const fields = [];
-      const groupedProperties = {}; // Group properties by view model
+      const groupedProperties = {};
       
       for (const [name, prop] of Object.entries(riveProps)) {
-        // Extract just the property name (after the last underscore if it exists)
-        // e.g., "property of View Model 3_TEST" -> "TEST"
+        // example "property_of_View_Model_3_Text" -> "Text"
         const displayName = name.includes('_') ? name.split('_').pop() : name;
         
         // Determine which view model this property belongs to
-        let viewModelName = "Root View Model"; // Default for root properties
+        let viewModelName = "Root View Model";
         if (name.includes('_')) {
-          // Extract the view model part (everything before the last underscore)
           const parts = name.split('_');
-          parts.pop(); // Remove the property name
-          viewModelName = parts.join('_');
-          // Clean up the name: "property of View Model 2" -> "View Model 2"
+          parts.pop(); 
+          viewModelName = parts.join(' ');
           viewModelName = viewModelName.replace(/^property of /i, '');
         }
         
@@ -186,9 +180,7 @@
         } else if (prop.type === "boolean") {
           defaultValue = prop.accessor.value || false;
         } else if (prop.type === "color") {
-          // Color stays as "color" type in SingularLive
           const colorValue = prop.accessor.value;
-          // Convert from Rive's ARGB integer format to {r, g, b, a}
           defaultValue = {
             r: (colorValue >> 16) & 0xFF,
             g: (colorValue >> 8) & 0xFF,
@@ -232,7 +224,7 @@
         }
       };
 
-      console.log("\n📋 COPY TO WIDGET MANAGER:");
+      console.log("\n COPY TO WIDGET MANAGER:");
       console.log("=".repeat(60));
       console.log(JSON.stringify(model, null, 2));
       console.log("=".repeat(60));
@@ -257,30 +249,14 @@
         if (json[name] === undefined) continue;
 
         try {
-          if (prop.type === "string") {
+          if (prop.type === "string" || prop.type === "number" || prop.type === "boolean") {
             const newValue = json[name];
             const currentValue = prop.accessor.value;
             if (newValue !== currentValue) {
               prop.accessor.value = newValue;
-              console.log(`📝 ${name}: "${currentValue}" → "${newValue}"`);
+              console.log(`${name}: "${currentValue}" → "${newValue}"`);
             }
           } 
-          else if (prop.type === "number") {
-            const newValue = parseFloat(json[name]);
-            const currentValue = prop.accessor.value;
-            if (newValue !== currentValue) {
-              prop.accessor.value = newValue;
-              console.log(`🔢 ${name}: ${currentValue} → ${newValue}`);
-            }
-          } 
-          else if (prop.type === "boolean") {
-            const newValue = !!json[name];
-            const currentValue = prop.accessor.value;
-            if (newValue !== currentValue) {
-              prop.accessor.value = newValue;
-              console.log(`🟢 ${name}: ${currentValue} → ${newValue}`);
-            }
-          }
           else if (prop.type === "color") {
             const colorData = json[name];
             // SingularLive sends color as {r, g, b, a} object
@@ -289,10 +265,8 @@
               const g = Math.round(colorData.g);
               const b = Math.round(colorData.b);
               const a = colorData.a !== undefined ? Math.round(colorData.a * 255) : 255;
-              
-              // Set using rgba method
               prop.accessor.rgba(r, g, b, a);
-              console.log(`🎨 ${name}: rgba(${r}, ${g}, ${b}, ${a})`);
+              console.log(`${name}: rgba(${r}, ${g}, ${b}, ${a})`);
             }
           }
         } catch (err) {
@@ -306,7 +280,7 @@
       if (prop && prop.type === "trigger") {
         if (typeof prop.accessor.trigger === "function") {
           prop.accessor.trigger();
-          console.log(`🚀 Triggered: ${action}`);
+          console.log(`Triggered: ${action}`);
         }
       }
     }

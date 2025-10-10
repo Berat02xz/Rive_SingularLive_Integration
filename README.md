@@ -28,9 +28,11 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 
 ## 🧱 Roadmap  
 
-- [ ] Parse and visualize Rive ViewModelInstance JSON schema  
-- [ ] Auto-generate Singular Live widget UI  
-- [ ] Automate `.riv` uploads into Singular projects  
+- [✅] Parse and visualize Rive ViewModelInstance JSON schema  
+- [✅] Auto-generate Singular Live widget UI  
+- [✅] Automate `.riv` uploads into Singular projects  
+- [] Bind all types of Rive data to Singular
+- [] Exhaustive testing before release
 
 ---
 

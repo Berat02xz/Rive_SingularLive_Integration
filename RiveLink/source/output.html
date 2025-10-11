@@ -219,12 +219,6 @@
       },
       onLoadError: (err) => {
         console.error("❌ Rive load error:", err);
-        if (err.data && err.data.includes("artboard")) {
-          console.log("💡 Artboard issue - try one of these fixes:");
-          console.log("   1. Leave ARTBOARD_NAME empty to use default artboard");
-          console.log("   2. Check artboard name spelling (case-sensitive)");
-          console.log("   3. Make sure the artboard exists in your .riv file");
-        }
       },
     };
     
@@ -328,6 +322,7 @@
         } else if (prop.type === "number") {
           defaultValue = prop.accessor.value || 0;
         } else if (prop.type === "boolean") {
+          fieldType = "checkbox";
           defaultValue = prop.accessor.value || false;
         } else if (prop.type === "color") {
           const colorValue = prop.accessor.value;
@@ -396,14 +391,11 @@
       onInit: onSingularInit,
       onValue: onSingularValue,
       onButtonClicked: onSingularButtonClicked,
-      onEditComp: onSingularEditComp,
     });
 
     function onSingularInit(json) {
       console.log("SingularWidget initialized with values:", json);
-      console.log("🔍 Checking for rive_artboard:", json.rive_artboard);
-      console.log("🔍 Checking for rive_layout:", json.rive_layout);
-      console.log("🔍 All keys:", Object.keys(json));
+      console.log(" All keys:", Object.keys(json));
       
       // Store initial values to apply after Rive loads
       window.pendingInitialValues = json;
@@ -411,24 +403,22 @@
       // Check if we need to set a different artboard from the start
       if (json.rive_artboard !== undefined) {
         const artboardIndex = parseInt(json.rive_artboard);
-        console.log(`🎯 Initial artboard selection: index ${artboardIndex} (will apply after Rive loads)`);
+        console.log(`Initial artboard selection: index ${artboardIndex} (will apply after Rive loads)`);
       } else {
-        console.log("⚠️ No rive_artboard found in init values");
+        console.log("No rive_artboard found in init values");
       }
       
       // Apply initial values immediately if Rive is already loaded
       if (r && Object.keys(riveProps).length > 0) {
-        console.log("🎬 Applying initial values from SingularLive...");
+        console.log("Applying initial values from SingularLive...");
         onSingularValue(json);
       } else {
-        console.log("⏳ Rive not ready yet, will apply values on load");
+        console.log("Rive not ready yet, will apply values on load");
       }
     }
 
     function onSingularValue(json) {
       console.log("Received values:", json);
-      console.log("🔍 rive_artboard in onValue:", json.rive_artboard);
-      console.log("🔍 rive_layout in onValue:", json.rive_layout);
       
       // Always update pending values with the latest data (merge with existing)
       if (window.pendingInitialValues) {
@@ -553,21 +543,21 @@
           
           listAllArtboards(r);
           
-          console.log(`📐 Active artboard: ${r.activeArtboard?.name || 'default'}`);
-          console.log(`📐 Active layout: ${layoutFit}`);
+          console.log(`Active artboard: ${r.activeArtboard?.name || 'default'}`);
+          console.log(`Active layout: ${layoutFit}`);
           resizeCanvas();
           
           if (r.viewModelCount === 0) {
-            console.error("❌ No view models found in this artboard");
+            console.error("No view models found in this artboard");
             return;
           }
 
           riveProps = GetAllViewModelProperties(r);
           
           if (Object.keys(riveProps).length === 0) {
-            console.warn("⚠️ No properties found.");
+            console.warn("No properties found.");
           } else {
-            console.log(`✅ Reloaded with ${Object.keys(riveProps).length} properties`);
+            console.log(`Reloaded with ${Object.keys(riveProps).length} properties`);
             // Generate new UI JSON for the new artboard's view models
             generateUIModel();
             
@@ -604,10 +594,6 @@
           console.log(`Triggered: ${action}`);
         }
       }
-    }
-
-    function onSingularEditComp(comp) {
-      console.log("onSingularEditComp", comp);
     }
     
   </script>

@@ -19,13 +19,14 @@
 </head>
 <body>
   <script src="https://unpkg.com/@rive-app/webgl2"></script>
+  <script src="https://unpkg.com/@rive-app/canvas"></script>
   <canvas id="canvas"></canvas>
   <script src="https://libs.singular.live/singularwidget/1.0.3/singularwidget.js"></script>
   <script>
     let riveProps = {};
     let r = null;
+    let currentRuntime = "webgl2"; // Track current runtime
     
-    // Function to resize canvas to match window size
     function resizeCanvas() {
       const canvas = document.getElementById("canvas");
       canvas.width = window.innerWidth;
@@ -35,11 +36,9 @@
         r.resizeDrawingSurfaceToCanvas();
       }
     }
-
-    // Listen for window resize events
     window.addEventListener('resize', resizeCanvas);
 
-    // Get all properties from a view model 
+    // Get all properties from a view model (non-nested only)
     function collectProperties(vmi, viewModel, props, pathPrefix = "") {
       const properties = viewModel.properties;
       if (!properties || !properties.length) return;
@@ -47,7 +46,7 @@
       for (const property of properties) {
         if (!property || !property.name) continue;
         
-        // Skip nested view model properties - they're just references not actual data
+        // Skip nested view model properties
         if (property.type === "viewModel") {
           console.log(`Skipping nested VM reference: ${property.name}`);
           continue;
@@ -56,7 +55,7 @@
         // Build the path for accessing this property
         const propertyPath = pathPrefix ? `${pathPrefix}/${property.name}` : property.name;
         
-        // Create accessor for this property
+        // Create binding based on type
         let accessor = null;
         try {
           switch(property.type) {
@@ -72,19 +71,19 @@
         }
 
         if (accessor) {
-          // Use path with / for Rive access, but store with _ for SingularLive ID compatibility
+          // Use path with / for Rive access, but store with _ for SingularLive id compatibility
           const propKey = propertyPath.replace(/\//g, '_');
           props[propKey] = { 
             type: property.type, 
             accessor,
-            path: propertyPath  // Keep original path for Rive
+            path: propertyPath 
           };
           console.log(`✅ ${propKey} (${property.type}) [rive path: ${propertyPath}]`);
         }
       }
     }
 
-    // Collect all properties from all view models
+    // Collect all properties from all view models (including nested)
     function GetAllViewModelProperties(rive) {
       const props = {};
       
@@ -97,8 +96,7 @@
         console.error("❌ No default view model");
         return props;
       }
-      console.log(`Root VM: ${defaultVM.name || 'Unnamed'}`);
-      
+
       // First: Collect properties from root view model
       collectProperties(vmi, defaultVM, props, "");
       
@@ -109,9 +107,6 @@
       for (const prop of rootProperties) {
         if (prop && prop.type === "viewModel" && prop.name) {
           console.log(`\n Found nested VM property: "${prop.name}"`);
-          
-          // Try to match this property to a specific view model
-          // The property name might contain the VM name (e.g., "property of View Model 2")
           let matchedVM = null;
           
           for (let i = 0; i < rive.viewModelCount; i++) {
@@ -160,11 +155,11 @@
           return;
         }
         
-        const artboardCount = file.artboardCount();  // Call it as a function
+        const artboardCount = file.artboardCount();  
         console.log(`Total artboards: ${artboardCount}\n`);
         
         for (let i = 0; i < artboardCount; i++) {
-          const artboard = file.artboardByIndex(i);  // This might also need ()
+          const artboard = file.artboardByIndex(i); 
           if (artboard) {
             const artboardName = typeof artboard.name === 'function' ? artboard.name() : artboard.name;
             const isDefault = i === 0 ? " (default)" : "";
@@ -209,11 +204,10 @@
         
         generateUIModel();
         
-        // Apply pending initial values if they exist
         if (window.pendingInitialValues) {
           console.log("🎬 Applying pending initial values from init...");
           const initialValues = window.pendingInitialValues;
-          window.pendingInitialValues = null; // Clear before processing to avoid loops
+          window.pendingInitialValues = null; 
           onSingularValue(initialValues);
         }
       },
@@ -237,7 +231,6 @@
       const fields = [];
       const groupedProperties = {};
       
-      // Get available artboards dynamically
       const availableArtboards = [];
       try {
         const file = r.file;
@@ -255,13 +248,22 @@
         console.error("Could not fetch artboards for UI:", err);
       }
       
-      // Add Rive configuration fields (these don't come from view models)
       const riveConfigFields = [
         {
           id: "rive_file_url",
           type: "text",
           title: "Rive File URL",
           defaultValue: "test_file.riv"
+        },
+        {
+          id: "rive_runtime",
+          type: "selection",
+          title: "Runtime",
+          defaultValue: "0",
+          selections: [
+            { id: "0", title: "WebGL2 (Rive Renderer)" },
+            { id: "1", title: "Canvas" }
+          ]
         },
         {
           id: "rive_artboard",
@@ -291,13 +293,18 @@
         }
       ];
       
-      // Add config fields to main fields array
       fields.push(...riveConfigFields);
       
-      // Track config field IDs for grouping (excluding removed button)
       const riveConfigIds = riveConfigFields.map(f => f.id).filter(id => id !== "rive_apply_settings");
       
       for (const [name, prop] of Object.entries(riveProps)) {
+        
+        // Skip properties that end with '__'
+        if (name.endsWith('__')) {
+          console.log(`Skipping property ending with '__': ${name}`);
+          continue;
+        }
+        
         // example "property_of_View_Model_3_Text" -> "Text"
         const displayName = name.includes('_') ? name.split('_').pop() : name;
         
@@ -386,6 +393,7 @@
       console.log("=".repeat(60));
     }
 
+
     // SingularLive Widget Integration
     SingularWidget.init({
       onInit: onSingularInit,
@@ -393,28 +401,8 @@
       onButtonClicked: onSingularButtonClicked,
     });
 
-    function onSingularInit(json) {
-      console.log("SingularWidget initialized with values:", json);
-      console.log(" All keys:", Object.keys(json));
-      
-      // Store initial values to apply after Rive loads
-      window.pendingInitialValues = json;
-      
-      // Check if we need to set a different artboard from the start
-      if (json.rive_artboard !== undefined) {
-        const artboardIndex = parseInt(json.rive_artboard);
-        console.log(`Initial artboard selection: index ${artboardIndex} (will apply after Rive loads)`);
-      } else {
-        console.log("No rive_artboard found in init values");
-      }
-      
-      // Apply initial values immediately if Rive is already loaded
-      if (r && Object.keys(riveProps).length > 0) {
-        console.log("Applying initial values from SingularLive...");
-        onSingularValue(json);
-      } else {
-        console.log("Rive not ready yet, will apply values on load");
-      }
+    function onSingularInit() {
+      console.log("SingularWidget initialized");
     }
 
     function onSingularValue(json) {
@@ -432,6 +420,20 @@
       let newArtboard = ARTBOARD_NAME;
       let newLayout = LAYOUT_FIT;
       let newFileUrl = r ? r.src : "test_file.riv";
+      let newRuntime = currentRuntime;
+      
+      // Check for runtime change
+      if (json.rive_runtime !== undefined) {
+        const runtimeOptions = ["webgl2", "canvas"];
+        const runtimeIndex = parseInt(json.rive_runtime);
+        newRuntime = runtimeOptions[runtimeIndex] || "webgl2";
+        
+        if (newRuntime !== currentRuntime) {
+          console.log(`🎮 Runtime change: "${currentRuntime}" → "${newRuntime}"`);
+          currentRuntime = newRuntime;
+          needsReload = true;
+        }
+      }
       
       // Check for artboard change
       if (json.rive_artboard !== undefined) {
@@ -482,7 +484,7 @@
         console.log("🔄 Reloading Rive with new configuration...");
         // Keep the latest values for after reload
         window.pendingInitialValues = json;
-        reloadRive(newFileUrl, newArtboard, newLayout);
+        reloadRive(newFileUrl, newArtboard, newLayout, newRuntime);
         return; // Don't process property updates yet, wait for reload
       }
 
@@ -518,7 +520,7 @@
     }
     
     // Function to reload Rive with new configuration
-    function reloadRive(fileUrl, artboardName, layoutFit) {
+    function reloadRive(fileUrl, artboardName, layoutFit, runtime = "webgl2") {
       // Clean up existing instance
       if (r) {
         try {
@@ -528,6 +530,10 @@
         }
       }
       
+      // Select the correct Rive runtime
+      const RiveRuntime = runtime === "canvas" ? rive : rive;
+      console.log(`🎮 Using runtime: ${runtime}`);
+      
       // Build new configuration
       const riveConfig = {
         src: fileUrl,
@@ -535,8 +541,8 @@
         autoplay: true,
         autoBind: true,
         stateMachines: STATE_MACHINE_NAME,
-        layout: new rive.Layout({
-          fit: rive.Fit[layoutFit.charAt(0).toUpperCase() + layoutFit.slice(1)] || rive.Fit.Contain
+        layout: new RiveRuntime.Layout({
+          fit: RiveRuntime.Fit[layoutFit.charAt(0).toUpperCase() + layoutFit.slice(1)] || RiveRuntime.Fit.Contain
         }),
         onLoad: () => {
           console.log("✅ Rive reloaded\n");
@@ -545,6 +551,7 @@
           
           console.log(`Active artboard: ${r.activeArtboard?.name || 'default'}`);
           console.log(`Active layout: ${layoutFit}`);
+          console.log(`Active runtime: ${runtime}`);
           resizeCanvas();
           
           if (r.viewModelCount === 0) {
@@ -583,7 +590,7 @@
         console.log("🎯 Using default artboard");
       }
       
-      r = new rive.Rive(riveConfig);
+      r = new RiveRuntime.Rive(riveConfig);
     }
 
     function onSingularButtonClicked(action) {

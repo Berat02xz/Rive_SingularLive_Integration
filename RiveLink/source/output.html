@@ -19,6 +19,7 @@
 </head>
 <body>
   <script src="https://unpkg.com/@rive-app/webgl2"></script>
+  <script src="https://unpkg.com/@rive-app/canvas"></script>
 
   <canvas id="canvas"></canvas>
   <script src="https://libs.singular.live/singularwidget/1.0.3/singularwidget.js"></script>
@@ -28,6 +29,7 @@
     let ARTBOARD_NAME = "";
     const STATE_MACHINE_NAME = "State Machine 1";
     let LAYOUT_FIT = "contain";
+    let USE_WEBGL2 = false;
     
     function resizeCanvas() {
       const canvas = document.getElementById("canvas");
@@ -147,6 +149,7 @@
     };
     
     if (ARTBOARD_NAME) riveConfig.artboard = ARTBOARD_NAME;
+    if (!USE_WEBGL2) riveConfig.useOffscreenRenderer = false;
     r = new rive.Rive(riveConfig);
 
     // Generate UI model for Singular Widget
@@ -197,6 +200,12 @@
             { id: "6", title: "Layout" },
             { id: "7", title: "None" }
           ]
+        },
+        {
+          id: "rive_renderer",
+          type: "checkbox",
+          title: "Rive Renderer",
+          defaultValue: false
         }
       ];
       
@@ -295,6 +304,7 @@
       let newArtboard = ARTBOARD_NAME;
       let newLayout = LAYOUT_FIT;
       let newFileUrl = r?.src || "test_file.riv";
+      let newRenderer = USE_WEBGL2;
       
       
       if (json.rive_artboard !== undefined) {
@@ -324,14 +334,20 @@
         needsReload = true;
       }
       
+      if (json.rive_renderer !== undefined && json.rive_renderer !== newRenderer) {
+        newRenderer = json.rive_renderer;
+        needsReload = true;
+      }
+      
       if (needsReload) {
         console.log("Reloading Rive with new configuration:", {
           fileUrl: newFileUrl,
           artboard: newArtboard,
-          layout: newLayout
+          layout: newLayout,
+          useWebGL2: newRenderer
         });
         window.pendingInitialValues = json;
-        reloadRive(newFileUrl, newArtboard, newLayout);
+        reloadRive(newFileUrl, newArtboard, newLayout, newRenderer);
         return;
       }
 
@@ -360,7 +376,7 @@
       }
     }
     
-    function reloadRive(fileUrl, artboardName, layoutFit) {
+    function reloadRive(fileUrl, artboardName, layoutFit, useWebGL2) {
       if (r) {
         try {
           r.cleanup();
@@ -368,6 +384,8 @@
           console.warn("Error cleaning up Rive:", err);
         }
       }
+      
+      USE_WEBGL2 = useWebGL2;
       
       const riveConfig = {
         src: fileUrl,
@@ -396,6 +414,8 @@
       };
       
       if (artboardName) riveConfig.artboard = artboardName;
+      if (!useWebGL2) riveConfig.useOffscreenRenderer = false;
+      
       r = new rive.Rive(riveConfig);
     }
 

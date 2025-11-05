@@ -26,10 +26,11 @@
   <script>
     let riveProps = {};
     let r = null;
-    let ARTBOARD_NAME = "";
-    const STATE_MACHINE_NAME = "State Machine 1";
-    let LAYOUT_FIT = "contain";
-    let USE_WEBGL2 = false;
+  let ARTBOARD_NAME = "";
+  const STATE_MACHINE_NAME = "State Machine 1";
+  let LAYOUT_FIT = "contain";
+  let USE_WEBGL2 = true;
+  let CURRENT_FILE_URL = "test_file.riv"; // Track current rive file in use
     
     function resizeCanvas() {
       const canvas = document.getElementById("canvas");
@@ -127,16 +128,48 @@
     
     // Initialize Rive
     const riveConfig = {
-      src: "test_file.riv",
+      src: CURRENT_FILE_URL,
       canvas: document.getElementById("canvas"),
       autoplay: true,
       autoBind: true,
-      stateMachines: STATE_MACHINE_NAME,
       onLoad: () => {
         console.log("✅ Rive loaded successfully");
         resizeCanvas();
         
-        if (r.viewModelCount === 0) return;
+        // Try to find and use a state machine
+        const artboard = r.activeArtboard;
+        if (artboard) {
+          const stateMachineCount = artboard.stateMachineCount();
+          console.log(`Found ${stateMachineCount} state machine(s)`);
+          
+          if (stateMachineCount > 0) {
+            // Try to find the named state machine first
+            let foundSM = false;
+            for (let i = 0; i < stateMachineCount; i++) {
+              const sm = artboard.stateMachineByIndex(i);
+              const smName = typeof sm.name === 'function' ? sm.name() : sm.name;
+              console.log(`State Machine ${i}: ${smName}`);
+              
+              if (smName === STATE_MACHINE_NAME) {
+                console.log(`✅ Using state machine: "${smName}"`);
+                foundSM = true;
+                break;
+              }
+            }
+            
+            // If not found, use the first one
+            if (!foundSM) {
+              const firstSM = artboard.stateMachineByIndex(0);
+              const firstName = typeof firstSM.name === 'function' ? firstSM.name() : firstSM.name;
+              console.log(`⚠️ "${STATE_MACHINE_NAME}" not found, using first state machine: "${firstName}"`);
+            }
+          }
+        }
+        
+        if (r.viewModelCount === 0) {
+          console.warn("⚠️ No view models found in this artboard");
+          return;
+        }
 
         riveProps = GetAllViewModelProperties(r);
         generateDynamicUI();
@@ -148,34 +181,52 @@
           onSingularValue(initialValues);
         }
       },
+      onLoadError: (err) => {
+        console.error("❌ Rive load error:", err);
+      }
     };
     
     if (ARTBOARD_NAME) riveConfig.artboard = ARTBOARD_NAME;
     if (!USE_WEBGL2) riveConfig.useOffscreenRenderer = false;
+    
+    // Don't specify stateMachines in config - let Rive auto-select or we'll handle it in onLoad
     r = new rive.Rive(riveConfig);
 
     // Generate dynamic UI for Singular Widget
     function generateDynamicUI() {
+      console.log("\n🚀 generateDynamicUI() called");
       const dynamicFields = [];
       const allPropertyIds = []; // Track all property IDs for single group
       
-      // Get available artboards
+      // Get available artboards and find current artboard index
       const availableArtboards = [];
+      let currentArtboardIndex = 0;
       const file = r.file;
       if (file) {
         const artboardCount = file.artboardCount();
+        const activeArtboard = r.activeArtboard;
+        const currentArtboardName = activeArtboard ? getArtboardName(activeArtboard) : ARTBOARD_NAME;
+        
         for (let i = 0; i < artboardCount; i++) {
           const artboard = file.artboardByIndex(i);
-          if (artboard) availableArtboards.push(getArtboardName(artboard));
+          if (artboard) {
+            const artboardName = getArtboardName(artboard);
+            availableArtboards.push(artboardName);
+            
+            // Check if this is the current artboard
+            if (artboardName === currentArtboardName || artboardName === ARTBOARD_NAME) {
+              currentArtboardIndex = i;
+            }
+          }
         }
       }
       
-      // Add dynamic artboard selector field
+      // Add dynamic artboard selector field with current artboard selected
       dynamicFields.push({
         id: "dynamicartboard",
         type: "selection",
         title: "Artboard",
-        defaultValue: "0",
+        defaultValue: currentArtboardIndex.toString(),
         selections: availableArtboards.map((name, index) => ({
           id: index.toString(),
           title: name
@@ -279,11 +330,7 @@
         }
       });
 
-      // Clear previous dynamic UI first by sending empty arrays
-      console.log("\n🧹Clearing again just to test...");
-      SingularWidget.setCustomWidgetUI({ fields: [], groups: [] }, (clearResponse) => {
-        console.log("Clear response:", clearResponse);
-      });
+    
     }
 
     // Initialize Singular Widget
@@ -303,9 +350,9 @@
         : json;
       
       let needsReload = false;
-      let newArtboard = ARTBOARD_NAME;
-      let newLayout = LAYOUT_FIT;
-      let newFileUrl = r?.src || "test_file.riv";
+    let newArtboard = ARTBOARD_NAME;
+    let newLayout = LAYOUT_FIT;
+    let newFileUrl = CURRENT_FILE_URL;
       let newRenderer = USE_WEBGL2;
       
       // Handle dynamic artboard change (from dynamic UI)
@@ -345,9 +392,16 @@
         }
       }
       
-      if (json.rive_file_url !== undefined && json.rive_file_url !== newFileUrl) {
-        newFileUrl = json.rive_file_url;
-        needsReload = true;
+      if (json.rive_file_url !== undefined) {
+        const candidateUrl = (json.rive_file_url || "").trim();
+        if (!candidateUrl) {
+          console.warn("⚠️ Ignoring empty rive_file_url from Widget Manager");
+        } else if (!/\.riv(?:\?.*)?$/i.test(candidateUrl)) {
+          console.warn(`⚠️ Ignoring invalid rive_file_url (must end with .riv): ${candidateUrl}`);
+        } else if (candidateUrl !== newFileUrl) {
+          newFileUrl = candidateUrl;
+          needsReload = true;
+        }
       }
       
       if (json.rive_renderer !== undefined && json.rive_renderer !== newRenderer) {
@@ -356,17 +410,24 @@
       }
       
       if (needsReload) {
-        console.log("Reloading Rive with new configuration:", {
+        // Validate file URL before reloading
+        if (!newFileUrl || newFileUrl.trim() === "") {
+          console.error("❌ Cannot reload: File URL is empty");
+          return;
+        }
+        
+        console.log("🔄 Reloading Rive with new configuration:", {
           fileUrl: newFileUrl,
           artboard: newArtboard,
           layout: newLayout,
           useWebGL2: newRenderer
         });
         window.pendingInitialValues = json;
-        reloadRive(newFileUrl, newArtboard, newLayout, newRenderer);
+        reloadRive(newFileUrl, newArtboard, newLayout, newRenderer, CURRENT_FILE_URL);
         return;
       }
 
+      let valuesChanged = false;
       for (const [name, prop] of Object.entries(riveProps)) {
         if (json[name] === undefined) continue;
 
@@ -375,6 +436,7 @@
             const newValue = json[name];
             if (newValue !== prop.accessor.value) {
               prop.accessor.value = newValue;
+              valuesChanged = true;
             }
           } else if (prop.type === "color") {
             const colorData = json[name];
@@ -384,20 +446,34 @@
               const b = Math.round(colorData.b);
               const a = colorData.a !== undefined ? Math.round(colorData.a * 255) : 255;
               prop.accessor.rgba(r, g, b, a);
+              valuesChanged = true;
             }
           }
         } catch (err) {
           console.error(`Failed to update '${name}':`, err.message);
         }
       }
+
+      if (valuesChanged) {
+        console.log("🔁 Values updated via Singular, refreshing dynamic UI defaults");
+        generateDynamicUI();
+      }
     }
     
-    function reloadRive(fileUrl, artboardName, layoutFit, useWebGL2) {
+    function reloadRive(fileUrl, artboardName, layoutFit, useWebGL2, previousFileUrl = null) {
+      // Validate file URL
+      if (!fileUrl || fileUrl.trim() === "") {
+        console.error("❌ Cannot reload Rive: File URL is empty or invalid");
+        return;
+      }
+      
+      console.log(`📂 Loading Rive file: "${fileUrl}"`);
+      
       if (r) {
         try {
           r.cleanup();
         } catch (err) {
-          console.warn("Error cleaning up Rive:", err);
+          console.warn("⚠️ Error cleaning up Rive:", err);
         }
       }
       
@@ -408,14 +484,46 @@
         canvas: document.getElementById("canvas"),
         autoplay: true,
         autoBind: true,
-        stateMachines: STATE_MACHINE_NAME,
         layout: new rive.Layout({
           fit: rive.Fit[layoutFit.charAt(0).toUpperCase() + layoutFit.slice(1)] || rive.Fit.Contain
         }),
         onLoad: () => {
+          CURRENT_FILE_URL = fileUrl;
           resizeCanvas();
           
-          if (r.viewModelCount === 0) return;
+          // Try to find and use a state machine
+          const artboard = r.activeArtboard;
+          if (artboard) {
+            const stateMachineCount = artboard.stateMachineCount();
+            console.log(`Found ${stateMachineCount} state machine(s) after reload`);
+            
+            if (stateMachineCount > 0) {
+              // Try to find the named state machine first
+              let foundSM = false;
+              for (let i = 0; i < stateMachineCount; i++) {
+                const sm = artboard.stateMachineByIndex(i);
+                const smName = typeof sm.name === 'function' ? sm.name() : sm.name;
+                
+                if (smName === STATE_MACHINE_NAME) {
+                  console.log(`✅ Using state machine: "${smName}"`);
+                  foundSM = true;
+                  break;
+                }
+              }
+              
+              // If not found, use the first one
+              if (!foundSM) {
+                const firstSM = artboard.stateMachineByIndex(0);
+                const firstName = typeof firstSM.name === 'function' ? firstSM.name() : firstSM.name;
+                console.log(`⚠️ "${STATE_MACHINE_NAME}" not found, using first state machine: "${firstName}"`);
+              }
+            }
+          }
+          
+          if (r.viewModelCount === 0) {
+            console.warn("⚠️ No view models found in this artboard");
+            return;
+          }
 
           riveProps = GetAllViewModelProperties(r);
           generateDynamicUI();
@@ -427,7 +535,14 @@
             onSingularValue(initialValues);
           }
         },
-        onLoadError: (err) => console.error("Rive reload error:", err)
+        onLoadError: (err) => {
+          console.error("Rive reload error:", err);
+          if (previousFileUrl && previousFileUrl !== fileUrl) {
+            console.warn(`↩️ Reverting to previous Rive file: "${previousFileUrl}"`);
+            CURRENT_FILE_URL = previousFileUrl;
+            reloadRive(previousFileUrl, artboardName, layoutFit, useWebGL2, null);
+          }
+        }
       };
       
       if (artboardName) riveConfig.artboard = artboardName;

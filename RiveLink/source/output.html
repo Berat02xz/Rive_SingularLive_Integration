@@ -22,7 +22,7 @@
   <script src="https://unpkg.com/@rive-app/canvas"></script>
 
   <canvas id="canvas"></canvas>
-  <script src="https://libs.singular.live/singularwidget/1.0.3/singularwidget.js"></script>
+  <script src="https://beta.singular.live/libs/singularwidget/1.0.4/singularwidget.js"></script>
   <script>
     let riveProps = {};
     let r = null;
@@ -67,7 +67,8 @@
         }
 
         if (accessor) {
-          const propKey = propertyPath.replace(/\//g, '_');
+          // Make propKey alphanumeric: remove all non-alphanumeric characters (including spaces, /, _)
+          const propKey = propertyPath.replace(/[^a-zA-Z0-9]/g, '');
           props[propKey] = { type: property.type, accessor, path: propertyPath };
         }
       }
@@ -134,10 +135,11 @@
       onLoad: () => {
         console.log("✅ Rive loaded successfully");
         resizeCanvas();
+        
         if (r.viewModelCount === 0) return;
 
         riveProps = GetAllViewModelProperties(r);
-        generateUIModel();
+        generateDynamicUI();
         
         if (window.pendingInitialValues) {
           console.log("Applying pending initial values:", window.pendingInitialValues);
@@ -152,11 +154,12 @@
     if (!USE_WEBGL2) riveConfig.useOffscreenRenderer = false;
     r = new rive.Rive(riveConfig);
 
-    // Generate UI model for Singular Widget
-    function generateUIModel() {
-      const fields = [];
+    // Generate dynamic UI for Singular Widget
+    function generateDynamicUI() {
+      const dynamicFields = [];
       const groupedProperties = {};
       
+      // Get available artboards
       const availableArtboards = [];
       const file = r.file;
       if (file) {
@@ -167,63 +170,38 @@
         }
       }
       
-      // some static fields
-      const riveConfigFields = [
-        {
-          id: "rive_file_url",
-          type: "text",
-          title: "Rive File URL",
-          defaultValue: "test_file.riv"
-        },
-        {
-          id: "rive_artboard",
-          type: "selection",
-          title: "Artboard",
-          defaultValue: "0",
-          selections: availableArtboards.map((name, index) => ({
-            id: index.toString(),
-            title: name
-          }))
-        },
-        {
-          id: "rive_layout",
-          type: "selection",
-          title: "Layout",
-          defaultValue: "0",
-          selections: [
-            { id: "0", title: "Contain" },
-            { id: "1", title: "Cover" },
-            { id: "2", title: "Fill" },
-            { id: "3", title: "Fit Width" },
-            { id: "4", title: "Fit Height" },
-            { id: "5", title: "Scale Down" },
-            { id: "6", title: "Layout" },
-            { id: "7", title: "None" }
-          ]
-        },
-        {
-          id: "rive_renderer",
-          type: "checkbox",
-          title: "Rive Renderer",
-          defaultValue: false
-        }
-      ];
+      // Add dynamic artboard selector field
+      dynamicFields.push({
+        id: "dynamicartboard",
+        type: "selection",
+        title: "Artboard",
+        defaultValue: "0",
+        selections: availableArtboards.map((name, index) => ({
+          id: index.toString(),
+          title: name
+        }))
+      });
       
-      fields.push(...riveConfigFields);
-      const riveConfigIds = riveConfigFields.map(f => f.id);
-      
+      // Build dynamic fields for view model properties
       for (const [name, prop] of Object.entries(riveProps)) {
-
-        // if a property ends with __, skip it (a way to name properties like that to hide them from singular)
-        if (name.endsWith('__')) continue;
+        // Use the original path to determine view model and property name
+        const originalPath = prop.path;
         
-        const displayName = name.includes('_') ? name.split('_').pop() : name;
+        // Get the display name (last part of the path)
+        const pathParts = originalPath.split('/');
+        const displayName = pathParts[pathParts.length - 1];
+        
+        // Skip properties that start with underscore
+        if (displayName.startsWith('_')) {
+          console.log(`Skipping property: ${displayName} (starts with _)`);
+          continue;
+        }
+        
+        // Determine view model name from the path
         let viewModelName = "Root View Model";
-        
-        if (name.includes('_')) {
-          const parts = name.split('_');
-          parts.pop();
-          viewModelName = parts.join(' ').replace(/^property of /i, '');
+        if (pathParts.length > 1) {
+          // Nested view model - use the parent path part
+          viewModelName = pathParts.slice(0, -1).join(' / ').replace(/^property of /i, '');
         }
         
         let fieldType = prop.type;
@@ -249,7 +227,7 @@
           };
         }
         
-        fields.push({
+        dynamicFields.push({
           id: name,
           type: fieldType,
           title: displayName.charAt(0).toUpperCase() + displayName.slice(1),
@@ -262,17 +240,24 @@
         groupedProperties[viewModelName].push(name);
       }
 
-      const groups = [{
-        id: "rive_configuration_group",
-        title: "Rive Configuration",
-        width: "double",
-        toolTip: "Configure Rive file source, artboard, and layout",
-        childIds: riveConfigIds
-      }];
+      // Build dynamic groups - start with artboard group at the top
+      const dynamicGroups = [];
       
+      // Add artboard configuration group at the top
+      dynamicGroups.push({
+        id: "dynamicartboardgroup",
+        title: "Artboard Selection",
+        width: "double",
+        toolTip: "Select which artboard to display",
+        childIds: ["dynamicartboard"]
+      });
+      
+      // Add view model property groups
       for (const [vmName, childIds] of Object.entries(groupedProperties)) {
-        groups.push({
-          id: vmName.replace(/\s+/g, '_').toLowerCase() + "_group",
+        const groupId = vmName.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() + "group";
+        console.log(`Creating group: "${vmName}" -> ID: "${groupId}"`);
+        dynamicGroups.push({
+          id: groupId,
           title: vmName,
           width: "double",
           toolTip: `Properties from ${vmName}`,
@@ -280,8 +265,24 @@
         });
       }
 
-      console.log("\nCOPY TO WIDGET MANAGER:");
-      console.log(JSON.stringify({ model: { fields, groups } }, null, 2));
+      // Send dynamic UI to Singular
+      const dynamicUI = {
+        fields: dynamicFields,
+        groups: dynamicGroups
+      };
+      
+      console.log("\n📤 Setting dynamic UI with", dynamicFields.length, "fields and", dynamicGroups.length, "groups");
+      console.log("Field IDs:", dynamicFields.map(f => f.id));
+      console.log("Group IDs:", dynamicGroups.map(g => g.id));
+      
+      SingularWidget.setCustomWidgetUI(dynamicUI, (response) => {
+        console.log("✅ Dynamic UI response:", response);
+        if (response.success) {
+          console.log("✅ Dynamic UI successfully set!");
+        } else {
+          console.error("❌ Failed to set dynamic UI:", response);
+        }
+      });
     }
 
     // Initialize Singular Widget
@@ -306,7 +307,21 @@
       let newFileUrl = r?.src || "test_file.riv";
       let newRenderer = USE_WEBGL2;
       
+      // Handle dynamic artboard change (from dynamic UI)
+      if (json.dynamicartboard !== undefined) {
+        const artboardIndex = parseInt(json.dynamicartboard);
+        const file = r.file;
+        if (file && artboardIndex >= 0 && artboardIndex < file.artboardCount()) {
+          const artboard = file.artboardByIndex(artboardIndex);
+          if (artboard) newArtboard = getArtboardName(artboard);
+        }
+        if (newArtboard !== ARTBOARD_NAME) {
+          ARTBOARD_NAME = newArtboard;
+          needsReload = true;
+        }
+      }
       
+      // Handle static artboard change (from Widget Manager UI)
       if (json.rive_artboard !== undefined) {
         const artboardIndex = parseInt(json.rive_artboard);
         const file = r.file;
@@ -398,10 +413,11 @@
         }),
         onLoad: () => {
           resizeCanvas();
+          
           if (r.viewModelCount === 0) return;
 
           riveProps = GetAllViewModelProperties(r);
-          generateUIModel();
+          generateDynamicUI();
             
           if (window.pendingInitialValues) {
             console.log("Applying pending initial values after reload:", window.pendingInitialValues);

@@ -157,7 +157,7 @@
     // Generate dynamic UI for Singular Widget
     function generateDynamicUI() {
       const dynamicFields = [];
-      const groupedProperties = {};
+      const allPropertyIds = []; // Track all property IDs for single group
       
       // Get available artboards
       const availableArtboards = [];
@@ -197,13 +197,6 @@
           continue;
         }
         
-        // Determine view model name from the path
-        let viewModelName = "Root View Model";
-        if (pathParts.length > 1) {
-          // Nested view model - use the parent path part
-          viewModelName = pathParts.slice(0, -1).join(' / ').replace(/^property of /i, '');
-        }
-        
         let fieldType = prop.type;
         let defaultValue = "";
         
@@ -234,13 +227,11 @@
           defaultValue: defaultValue
         });
         
-        if (!groupedProperties[viewModelName]) {
-          groupedProperties[viewModelName] = [];
-        }
-        groupedProperties[viewModelName].push(name);
+        // Add to single group tracking
+        allPropertyIds.push(name);
       }
 
-      // Build dynamic groups - start with artboard group at the top
+      // Build dynamic groups - use only 2 static groups
       const dynamicGroups = [];
       
       // Add artboard configuration group at the top
@@ -252,26 +243,30 @@
         childIds: ["dynamicartboard"]
       });
       
-      // Add view model property groups
-      for (const [vmName, childIds] of Object.entries(groupedProperties)) {
-        const groupId = vmName.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() + "group";
-        console.log(`Creating group: "${vmName}" -> ID: "${groupId}"`);
+      // Add single group for all Rive properties
+      if (allPropertyIds.length > 0) {
         dynamicGroups.push({
-          id: groupId,
-          title: vmName,
+          id: "rivepropertiesgroup",
+          title: "Rive Properties",
           width: "double",
-          toolTip: `Properties from ${vmName}`,
-          childIds: childIds
+          toolTip: "All properties from Rive view models",
+          childIds: allPropertyIds
         });
       }
 
-      // Send dynamic UI to Singular
+      // Clear previous dynamic UI first by sending empty arrays
+      console.log("\n🧹 Clearing previous dynamic UI...");
+      SingularWidget.setCustomWidgetUI({ fields: [], groups: [] }, (clearResponse) => {
+        console.log("Clear response:", clearResponse);
+      });
+      
+      // Now send the new dynamic UI
       const dynamicUI = {
         fields: dynamicFields,
         groups: dynamicGroups
       };
       
-      console.log("\n📤 Setting dynamic UI with", dynamicFields.length, "fields and", dynamicGroups.length, "groups");
+      console.log("📤 Setting new dynamic UI with", dynamicFields.length, "fields and", dynamicGroups.length, "groups");
       console.log("Field IDs:", dynamicFields.map(f => f.id));
       console.log("Group IDs:", dynamicGroups.map(g => g.id));
       
@@ -282,6 +277,12 @@
         } else {
           console.error("❌ Failed to set dynamic UI:", response);
         }
+      });
+
+      // Clear previous dynamic UI first by sending empty arrays
+      console.log("\n🧹Clearing again just to test...");
+      SingularWidget.setCustomWidgetUI({ fields: [], groups: [] }, (clearResponse) => {
+        console.log("Clear response:", clearResponse);
       });
     }
 

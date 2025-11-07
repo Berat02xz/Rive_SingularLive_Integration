@@ -127,11 +127,9 @@
     // Initialize Singular Widget first (don't load Rive until we have a valid URL)
     SingularWidget.init({
       onInit: (json) => {
-        console.log("🔵 SingularWidget.onInit called with:", json);
         window.pendingInitialValues = json;
         // Check if we have a valid .riv file URL to load (input ends with ".riv")
         if (json.rive_file_url && json.rive_file_url.endsWith('.riv')) {
-          console.log("✅ Valid .riv file URL detected:", json.rive_file_url);
           CURRENT_FILE_URL = json.rive_file_url;
           initializeRive(json.rive_file_url);
         } else {
@@ -175,7 +173,6 @@
           generateUIModel();
         
           if (window.pendingInitialValues) {
-            console.log("🔵 Applying pending initial values:", window.pendingInitialValues);
             const initialValues = window.pendingInitialValues;
             window.pendingInitialValues = null;
             onSingularValue(initialValues);
@@ -329,9 +326,6 @@
       }
 
       // Set dynamic UI using SingularWidget.setCustomWidgetUI
-      console.log("Setting dynamic UI with fields and groups...");
-      console.log("📤 Sending to setCustomWidgetUI:", { fields, groups });
-      
       if (typeof SingularWidget.setCustomWidgetUI === 'function') {
         const res = SingularWidget.setCustomWidgetUI({
           fields: fields,
@@ -370,7 +364,6 @@
     // if a value such as artboard or layout changes, then it reloads Rive (required)
     function onSingularValue(json) {
       console.log("🔵 onSingularValue called with:", json);
-      console.log("🔵 Current state - r:", r ? "exists" : "null", "CURRENT_FILE_URL:", CURRENT_FILE_URL);
       
       window.pendingInitialValues = window.pendingInitialValues 
         ? { ...window.pendingInitialValues, ...json } 
@@ -399,7 +392,6 @@
       }
       
       if (json.rive_layout !== undefined) {
-        console.log("🔵 Layout change requested:", json.rive_layout);
         const layoutOptions = ["contain", "cover", "fill", "fitWidth", "fitHeight", "scaleDown", "layout", "none"];
         newLayout = layoutOptions[parseInt(json.rive_layout)] || "contain";
         if (newLayout !== LAYOUT_FIT) {
@@ -427,7 +419,6 @@
       
       // If we don't have a Rive instance yet but we have a valid URL, initialize it
       if (!r && CURRENT_FILE_URL && CURRENT_FILE_URL.endsWith('.riv')) {
-        console.log("🔵 No Rive instance exists, initializing with:", CURRENT_FILE_URL);
         initializeRive(CURRENT_FILE_URL);
         return;
       }
@@ -450,18 +441,15 @@
       }
 
       // Handle dynamic field updates - map alphanumeric IDs back to property names
-      console.log("🔵 Processing dynamic field updates...");
       for (const [name, prop] of Object.entries(riveProps)) {
         const alphanumericId = toAlphanumericId(name);
         if (json[alphanumericId] === undefined) continue;
 
-        console.log("🔵 Updating property:", name, "(id:", alphanumericId, ") with value:", json[alphanumericId]);
         try {
           if (prop.type === "string" || prop.type === "number" || prop.type === "boolean") {
             const newValue = json[alphanumericId];
             if (newValue !== prop.accessor.value) {
               prop.accessor.value = newValue;
-              console.log("✅ Updated", name, "to", newValue);
             }
           } else if (prop.type === "color") {
             const colorData = json[alphanumericId];
@@ -471,7 +459,6 @@
               const b = Math.round(colorData.b);
               const a = colorData.a !== undefined ? Math.round(colorData.a * 255) : 255;
               prop.accessor.rgba(r, g, b, a);
-              console.log("✅ Updated color", name, "to rgba(", r, g, b, a, ")");
             }
           }
         } catch (err) {
@@ -515,17 +502,13 @@
           if (r.viewModelCount === 0) {
             console.log("⚠️ No view models found in reloaded Rive file");
             // Still generate UI even without view models
-            generateUIModel();
             return;
           }
 
-          console.log("🔵 Getting view model properties after reload...");
           riveProps = GetAllViewModelProperties(r);
-          console.log("🔵 Found", Object.keys(riveProps).length, "properties after reload");
           generateUIModel();
             
           if (window.pendingInitialValues) {
-            console.log("🔵 Applying pending initial values after reload:", window.pendingInitialValues);
             const initialValues = window.pendingInitialValues;
             window.pendingInitialValues = null;
             onSingularValue(initialValues);
@@ -559,6 +542,7 @@
         const alphanumericId = toAlphanumericId(name);
         if (alphanumericId === action && prop?.type === "trigger" && typeof prop.accessor.trigger === "function") {
           prop.accessor.trigger();
+          generateUIModel();
           return;
         }
       }

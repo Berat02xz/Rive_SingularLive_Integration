@@ -1,0 +1,44 @@
+{
+  "model": {
+    "fields": [
+      {
+        "id": "rive_file_url",
+        "type": "text",
+        "title": "Rive File URL",
+        "defaultValue": ""
+      },
+      {
+        "id": "rive_renderer",
+        "type": "checkbox",
+        "title": "Rive Renderer",
+        "defaultValue": false
+      },
+      {
+        "id": "rive_layout",
+        "type": "selection",
+        "title": "Layout",
+        "defaultValue": "0",
+        "selections": [
+          { "id": "0", "title": "Contain" },
+          { "id": "1", "title": "Cover" },
+          { "id": "2", "title": "Fill" },
+          { "id": "3", "title": "Fit Width" },
+          { "id": "4", "title": "Fit Height" },
+          { "id": "5", "title": "Scale Down" },
+          { "id": "6", "title": "Layout" },
+          { "id": "7", "title": "None" }
+        ]
+      }
+    ],
+    "groups": [
+      {
+        "id": "riveconfigurationgroup",
+        "title": "Rive Configuration",
+        "width": "double",
+        "toolTip": "Configure Rive file source, renderer, and layout",
+        "activeId": "",
+        "childIds": ["rive_file_url", "rive_renderer", "rive_layout"]
+      }
+    ]
+  }
+}

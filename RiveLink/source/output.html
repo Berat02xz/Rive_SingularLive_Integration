@@ -29,6 +29,7 @@
     let STATE_MACHINE_NAME = "State Machine 1";
     let LAYOUT_FIT = "contain";
     let CURRENT_FILE_URL = "";
+    let USE_OFFSCREEN_RENDERER = false;
     
     function resizeCanvas() {
       const canvas = document.getElementById("canvas");
@@ -147,6 +148,7 @@
         canvas: document.getElementById("canvas"),
         autoplay: true,
         autoBind: true,
+        useOffscreenRenderer: USE_OFFSCREEN_RENDERER,
         onLoad: () => {
           console.log("✅ Rive loaded successfully, src:", fileUrl);
           resizeCanvas();
@@ -401,6 +403,17 @@
         }
       }
       
+      // Handle renderer toggle
+      if (json.rive_renderer !== undefined) {
+        console.log("🔵 Renderer change requested:", json.rive_renderer);
+        const newUseOffscreen = json.rive_renderer === true;
+        if (newUseOffscreen !== USE_OFFSCREEN_RENDERER) {
+          console.log("🔵 Offscreen renderer changed from", USE_OFFSCREEN_RENDERER, "to", newUseOffscreen);
+          USE_OFFSCREEN_RENDERER = newUseOffscreen;
+          needsReload = true;
+        }
+      }
+      
       // Only load files that end with .riv to prevent errors while typing
       if (json.rive_file_url !== undefined) {
         console.log("🔵 File URL change requested:", json.rive_file_url);
@@ -483,6 +496,7 @@
         canvas: document.getElementById("canvas"),
         autoplay: true,
         autoBind: true,
+        useOffscreenRenderer: USE_OFFSCREEN_RENDERER,
         layout: new rive.Layout({
           fit: rive.Fit[layoutFit.charAt(0).toUpperCase() + layoutFit.slice(1)] || rive.Fit.Contain
         }),

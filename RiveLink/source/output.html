@@ -234,7 +234,7 @@
       const riveConfig = {
         src: fileUrl,
         canvas: document.getElementById("canvas"),
-        autoplay: false, // Don't autoplay - we control animations manually for In/Out
+        autoplay: true, // Keep autoplay for state machines to process view model updates
         autoBind: true,
         ...(CURRENT_RUNTIME === 'webgl2' ? { useOffscreenRenderer: USE_OFFSCREEN_RENDERER } : {}),
         // apply current layout fit on initial load as well
@@ -627,7 +627,7 @@
       const riveConfig = {
         src: fileUrl,
         canvas: document.getElementById("canvas"),
-        autoplay: false, // Don't autoplay - we control animations manually for In/Out
+        autoplay: true, // Keep autoplay for state machines to process view model updates
         autoBind: true,
         ...(CURRENT_RUNTIME === 'webgl2' ? { useOffscreenRenderer: USE_OFFSCREEN_RENDERER } : {}),
         layout: new rive.Layout({
@@ -814,6 +814,27 @@
       console.log('🎯 onSingularAnimation event:', evt);
       if (!evt || !evt.timeline) return;
       
+      // Handle 'stop' event - resume state machine after timeline finishes
+      if (evt.event === 'stop') {
+        console.log(`🔄 Timeline '${evt.timeline}' stopped, resuming state machine`);
+        if (r && STATE_MACHINE_NAME) {
+          try {
+            r.stop(); // stop timeline
+            r.play(STATE_MACHINE_NAME); // resume state machine
+            console.log(`✅ Resumed state machine: ${STATE_MACHINE_NAME}`);
+          } catch (e) {
+            console.warn('⚠️ Failed to resume state machine:', e);
+          }
+        }
+        return;
+      }
+      
+      // Only respond to 'start' events for playing timelines
+      if (evt.event !== 'start') {
+        console.log(`ℹ️ Ignoring event type '${evt.event}' (only processing 'start' and 'stop')`);
+        return;
+      }
+      
       // If timelines not detected yet, queue
       if (!r || (!HAS_IN_TIMELINE && !HAS_OUT_TIMELINE)) {
         console.log('⏳ Queuing animation event until timelines detected');
@@ -838,14 +859,32 @@
 
     // Handle button clicks from Singular Widget
     function onSingularButtonClicked(action) {
+      console.log('🔘 onSingularButtonClicked:', action);
+      
+      // Ensure state machine is running for triggers to work
+      if (r && STATE_MACHINE_NAME) {
+        try {
+          // Check if state machine is playing, if not restart it
+          if (!r.isPlaying || r.isPaused) {
+            console.log('🔄 State machine not running, restarting for trigger');
+            r.play(STATE_MACHINE_NAME);
+          }
+        } catch (e) {
+          console.warn('⚠️ Could not check/restart state machine:', e);
+        }
+      }
+      
       // Map alphanumeric ID back to property name
       for (const [name, prop] of Object.entries(riveProps)) {
         const alphanumericId = toAlphanumericId(name);
         if (alphanumericId === action && prop?.type === "trigger" && typeof prop.accessor.trigger === "function") {
+          console.log(`🔘 Firing trigger: ${name}`);
           prop.accessor.trigger();
           return;
         }
       }
+      
+      console.warn(`⚠️ Button action '${action}' not found in riveProps`);
     }
     
   </script>

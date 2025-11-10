@@ -226,6 +226,7 @@
       },
       onValue: onSingularValue,
       onButtonClicked: onSingularButtonClicked,
+      onAnimation: onSingularAnimation,
     });
     
     // Initialize Rive with a given file URL
@@ -233,7 +234,7 @@
       const riveConfig = {
         src: fileUrl,
         canvas: document.getElementById("canvas"),
-        autoplay: true,
+        autoplay: false, // Don't autoplay - we control animations manually for In/Out
         autoBind: true,
         ...(CURRENT_RUNTIME === 'webgl2' ? { useOffscreenRenderer: USE_OFFSCREEN_RENDERER } : {}),
         // apply current layout fit on initial load as well
@@ -243,6 +244,7 @@
         onLoad: () => {
           console.log("✅ Rive loaded successfully, src:", fileUrl);
           resizeCanvas();
+          detectInOutTimelines();
           
           // Try to find a Rive state machine
           if (r.stateMachineNames && r.stateMachineNames.length > 0) {
@@ -625,7 +627,7 @@
       const riveConfig = {
         src: fileUrl,
         canvas: document.getElementById("canvas"),
-        autoplay: true,
+        autoplay: false, // Don't autoplay - we control animations manually for In/Out
         autoBind: true,
         ...(CURRENT_RUNTIME === 'webgl2' ? { useOffscreenRenderer: USE_OFFSCREEN_RENDERER } : {}),
         layout: new rive.Layout({
@@ -634,6 +636,7 @@
         onLoad: () => {
           console.log("✅ Rive reloaded successfully");
           resizeCanvas();
+          detectInOutTimelines();
           
           // Try to find a state machine
           if (r.stateMachineNames && r.stateMachineNames.length > 0) {
@@ -680,6 +683,159 @@
       r = new rive.Rive(riveConfig);
     }
 
+    // ---- In/Out timeline detection & playback integration ----
+    let HAS_IN_TIMELINE = false;
+    let HAS_OUT_TIMELINE = false;
+    let IN_DURATION = null;
+    let OUT_DURATION = null;
+
+    function detectInOutTimelines() {
+      if (!r) return;
+      try {
+        // Prefer enumerating animations from the artboard for reliability
+        const names = new Set();
+        const file = r.file;
+        if (file) {
+          // Determine current artboard name or fallback to default
+            let artboard = null;
+            if (ARTBOARD_NAME) {
+              // Try exact match first
+              for (let i = 0; i < file.artboardCount(); i++) {
+                const ab = file.artboardByIndex(i);
+                if (ab && (typeof ab.name === 'function' ? ab.name() : ab.name) === ARTBOARD_NAME) {
+                  artboard = ab; break;
+                }
+              }
+            }
+            if (!artboard) artboard = file.artboardByIndex(0);
+            if (artboard && artboard.animationCount) {
+              for (let i = 0; i < artboard.animationCount(); i++) {
+                const anim = artboard.animationByIndex(i);
+                if (!anim) continue;
+                const animName = typeof anim.name === 'function' ? anim.name() : anim.name;
+                names.add(animName);
+                if (animName === 'In') IN_DURATION = typeof anim.duration === 'function' ? anim.duration() : anim.duration;
+                if (animName === 'Out') OUT_DURATION = typeof anim.duration === 'function' ? anim.duration() : anim.duration;
+              }
+            }
+        }
+        // Fallback to runtime's animationNames array if present
+        if (r.animationNames && r.animationNames.length) {
+          r.animationNames.forEach(n => names.add(n));
+        }
+        HAS_IN_TIMELINE = names.has('In');
+        HAS_OUT_TIMELINE = names.has('Out');
+        console.log(`🔍 Timeline scan: In=${HAS_IN_TIMELINE} (${IN_DURATION ?? 'n/a'}s) Out=${HAS_OUT_TIMELINE} (${OUT_DURATION ?? 'n/a'}s) names=[${[...names].join(', ')}]`);
+        flushPendingTimelineEvents();
+      } catch (e) {
+        console.warn('⚠️ Unable to inspect animation timelines', e);
+      }
+    }
+
+    function playTimeline(name) {
+      if (!r) return console.warn('⚠️ playTimeline called with no Rive instance');
+      
+      // Verify animation exists by checking artboard directly
+      let found = false;
+      try {
+        const file = r.file;
+        if (file) {
+          // Check current artboard or default
+          let artboard = null;
+          if (ARTBOARD_NAME) {
+            for (let i = 0; i < file.artboardCount(); i++) {
+              const ab = file.artboardByIndex(i);
+              if (ab && (typeof ab.name === 'function' ? ab.name() : ab.name) === ARTBOARD_NAME) {
+                artboard = ab; break;
+              }
+            }
+          }
+          if (!artboard) artboard = file.artboardByIndex(0);
+          
+          if (artboard && artboard.animationCount) {
+            for (let i = 0; i < artboard.animationCount(); i++) {
+              const anim = artboard.animationByIndex(i);
+              const animName = typeof anim.name === 'function' ? anim.name() : anim.name;
+              if (animName === name) { 
+                found = true; 
+                break; 
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('⚠️ Error checking animation existence:', e);
+      }
+      
+      if (!found) {
+        console.warn(`⚠️ Requested timeline '${name}' not found in current artboard`);
+        return;
+      }
+      
+      try {
+        // Stop state machines first (they can block timeline playback)
+        if (r.stateMachineInputs) {
+          r.stop(); // stop everything including state machines
+        } else {
+          r.pause(); // just pause animations
+        }
+        
+        // Play the timeline animation
+        r.play([name]); // pass array of animation names
+        console.log(`🎬 Playing Rive timeline '${name}'`);
+        
+        // Log current state for debugging
+        setTimeout(() => {
+          console.log(`🔍 Rive playback state: playing=${r.isPlaying}, paused=${r.isPaused}`);
+        }, 50);
+      } catch (e) {
+        console.error(`❌ Failed to play timeline '${name}'`, e);
+      }
+    }
+
+    // queue animation events arriving before Rive load / detection
+    const pendingTimelineEvents = [];
+    function flushPendingTimelineEvents() {
+      if (!r) return;
+      if (!HAS_IN_TIMELINE && !HAS_OUT_TIMELINE) return; // still nothing to process
+      if (!pendingTimelineEvents.length) return;
+      console.log(`🟨 Flushing ${pendingTimelineEvents.length} pending animation events`);
+      const toProcess = [...pendingTimelineEvents];
+      pendingTimelineEvents.length = 0;
+      toProcess.forEach(ev => {
+        if (ev.timeline === 'In' && HAS_IN_TIMELINE) playTimeline('In');
+        if (ev.timeline === 'Out' && HAS_OUT_TIMELINE) playTimeline('Out');
+      });
+    }
+
+    // Callback from Singular when composition animation events occur
+    function onSingularAnimation(evt) {
+      // evt.timeline should be 'In' or 'Out' (and possibly others). Map directly.
+      console.log('🎯 onSingularAnimation event:', evt);
+      if (!evt || !evt.timeline) return;
+      
+      // If timelines not detected yet, queue
+      if (!r || (!HAS_IN_TIMELINE && !HAS_OUT_TIMELINE)) {
+        console.log('⏳ Queuing animation event until timelines detected');
+        pendingTimelineEvents.push(evt);
+        return;
+      }
+      
+      // Use newState to determine which timeline to play (In or Out)
+      // newState can be 'In', 'Out', 'Out1', 'Out2', etc.
+      const targetTimeline = evt.newState || evt.timeline;
+      console.log(`🎯 Target timeline from newState/timeline: '${targetTimeline}'`);
+      
+      // Map any state starting with 'Out' to the 'Out' timeline
+      if (targetTimeline === 'In' && HAS_IN_TIMELINE) {
+        playTimeline('In');
+      } else if (targetTimeline && targetTimeline.startsWith('Out') && HAS_OUT_TIMELINE) {
+        playTimeline('Out');
+      } else {
+        console.log(`ℹ️ Timeline '${targetTimeline}' not mapped (In:${HAS_IN_TIMELINE} Out:${HAS_OUT_TIMELINE})`);
+      }
+    }
+
     // Handle button clicks from Singular Widget
     function onSingularButtonClicked(action) {
       // Map alphanumeric ID back to property name
@@ -687,7 +843,6 @@
         const alphanumericId = toAlphanumericId(name);
         if (alphanumericId === action && prop?.type === "trigger" && typeof prop.accessor.trigger === "function") {
           prop.accessor.trigger();
-          generateUIModel();
           return;
         }
       }

@@ -816,15 +816,9 @@
       
       // Handle 'stop' event - resume state machine after timeline finishes
       if (evt.event === 'stop') {
-        console.log(`🔄 Timeline '${evt.timeline}' stopped, resuming state machine`);
-        if (r && STATE_MACHINE_NAME) {
-          try {
-            r.stop(); // stop timeline
-            r.play(STATE_MACHINE_NAME); // resume state machine
-            console.log(`✅ Resumed state machine: ${STATE_MACHINE_NAME}`);
-          } catch (e) {
-            console.warn('⚠️ Failed to resume state machine:', e);
-          }
+        console.log(`🔄 Timeline '${evt.timeline}' stopped, reloading Rive to restore view models`);
+        if (r && CURRENT_FILE_URL) {
+          reloadRive(CURRENT_FILE_URL, ARTBOARD_NAME, LAYOUT_FIT);
         }
         return;
       }

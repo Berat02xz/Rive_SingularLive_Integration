@@ -7,12 +7,7 @@
         "title": "Rive File URL",
         "defaultValue": ""
       },
-      {
-        "id": "rive_renderer",
-        "type": "checkbox",
-        "title": "Rive Renderer",
-        "defaultValue": false
-      },
+
       {
         "id": "rive_layout",
         "type": "selection",
@@ -28,6 +23,12 @@
           { "id": "6", "title": "Layout" },
           { "id": "7", "title": "None" }
         ]
+      },
+      {
+        "id": "rive_renderer",
+        "type": "checkbox",
+        "title": "Rive Renderer",
+        "defaultValue": true
       }
     ],
     "groups": [
@@ -37,7 +38,7 @@
         "width": "double",
         "toolTip": "Configure Rive file source, renderer, and layout",
         "activeId": "",
-        "childIds": ["rive_file_url", "rive_renderer", "rive_layout"]
+        "childIds": ["rive_file_url",  "rive_layout","rive_renderer"]
       }
     ]
   }

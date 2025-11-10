@@ -688,6 +688,7 @@
     let HAS_OUT_TIMELINE = false;
     let IN_DURATION = null;
     let OUT_DURATION = null;
+    let LAST_PLAYED_TIMELINE = null; // Track which timeline was last played
 
     function detectInOutTimelines() {
       if (!r) return;
@@ -782,6 +783,7 @@
         
         // Play the timeline animation
         r.play([name]); // pass array of animation names
+        LAST_PLAYED_TIMELINE = name; // Track which timeline we just played
         console.log(`🎬 Playing Rive timeline '${name}'`);
         
         // Log current state for debugging
@@ -816,9 +818,17 @@
       
       // Handle 'stop' event - resume state machine after timeline finishes
       if (evt.event === 'stop') {
-        console.log(`🔄 Timeline '${evt.timeline}' stopped, reloading Rive to restore view models`);
-        if (r && CURRENT_FILE_URL) {
-          reloadRive(CURRENT_FILE_URL, ARTBOARD_NAME, LAYOUT_FIT);
+        console.log(`🔄 Timeline '${evt.timeline}' stopped (last played: ${LAST_PLAYED_TIMELINE})`);
+        
+        // Only reload if 'In' timeline just finished - keep 'Out' on last frame
+        if (LAST_PLAYED_TIMELINE === 'In') {
+          console.log('🔄 In timeline finished, reloading Rive to restore view models');
+          if (r && CURRENT_FILE_URL) {
+            reloadRive(CURRENT_FILE_URL, ARTBOARD_NAME, LAYOUT_FIT);
+          }
+        } else if (LAST_PLAYED_TIMELINE === 'Out') {
+          console.log('✅ Out timeline finished, staying on last frame (no reload)');
+          // Keep the Out animation on its last frame - don't reload
         }
         return;
       }

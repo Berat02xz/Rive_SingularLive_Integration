@@ -151,12 +151,13 @@
     // Get all view models and collect their properties
     function GetAllViewModelProperties(rive) {
       const props = {};
+      const vmMetadata = {}; // Track VM name and parent property for each property
       const vmi = rive.viewModelInstance;
       const defaultVM = rive.defaultViewModel();
       
       if (!defaultVM) {
         console.error("No default view model");
-        return props;
+        return { props, vmMetadata };
       }
 
       // collect properties from the default view model
@@ -190,13 +191,16 @@
            
           if (matchedVM) {
             processedVMs.add(matchedVM);
+            const vmName = typeof matchedVM.name === 'function' ? matchedVM.name() : matchedVM.name;
+            // Store metadata for this nested VM's properties
+            vmMetadata[prop.name] = { vmName, parentProp: prop.name };
             // collect properties from a nested view model
             collectProperties(vmi, matchedVM, props, prop.name);
           }
         }
       }
       
-      return props;
+      return { props, vmMetadata };
     }
     
     // Initialize Singular Widget first (wait for initial values to decide runtime)
@@ -261,7 +265,9 @@
           }
 
           console.log("🔵 Getting Rive view model properties...");
-          riveProps = GetAllViewModelProperties(r);
+          const vmData = GetAllViewModelProperties(r);
+          riveProps = vmData.props;
+          window.vmMetadata = vmData.vmMetadata;
           console.log("🔵 Found", Object.keys(riveProps).length, "Rive properties");
           generateUIModel();
         
@@ -341,19 +347,38 @@
         });
       }
       
+      // Track parent property info for nested view models
+      const viewModelParentInfo = {};
+      
       // for each property, create a UI field
       for (const [name, prop] of Object.entries(riveProps)) {
         // if a property ends with __, skip it (a way to name properties like that to hide them from singular)
-        if (name.endsWith('__')) continue;
+        if (name.includes('__')) continue;
         
         const displayName = name.includes('_') ? name.split('_').pop() : name;
         
         let viewModelName = "Root View Model";
+        let parentPropertyName = null;
         
-        if (name.includes('_')) {
+        // Check if this property belongs to a nested view model
+        if (name.includes('_') && window.vmMetadata) {
           const parts = name.split('_');
-          parts.pop();
-          viewModelName = parts.join(' ').replace(/^property of /i, '');
+          const pathPrefix = parts[0]; // e.g., "Propertyofscoreboard"
+          
+          // Look up the actual VM name from metadata
+          if (window.vmMetadata[pathPrefix]) {
+            viewModelName = window.vmMetadata[pathPrefix].vmName;
+            parentPropertyName = window.vmMetadata[pathPrefix].parentProp;
+          } else {
+            // Fallback for root properties with underscores
+            parts.pop();
+            viewModelName = parts.join(' ');
+          }
+        }
+        
+        // Store parent info for this view model
+        if (parentPropertyName && !viewModelParentInfo[viewModelName]) {
+          viewModelParentInfo[viewModelName] = parentPropertyName;
         }
         
         let fieldType = prop.type;
@@ -410,9 +435,17 @@
       
       // Add other property groups
       for (const [vmName, childIds] of Object.entries(groupedProperties)) {
+        let groupTitle = vmName;
+        
+        // Check if this view model has parent info (nested view model)
+        if (viewModelParentInfo[vmName]) {
+          const cleanParentName = viewModelParentInfo[vmName].replace(/[^a-zA-Z0-9]/g, '');
+          groupTitle = `${vmName} - (${cleanParentName})`;
+        }
+        
         groups.push({
           id: toAlphanumericId(vmName) + "group",
-          title: vmName,
+          title: groupTitle,
           width: "double",
           toolTip: `Properties from ${vmName}`,
           childIds: childIds
@@ -650,7 +683,9 @@
             return;
           }
 
-          riveProps = GetAllViewModelProperties(r);
+          const vmData = GetAllViewModelProperties(r);
+          riveProps = vmData.props;
+          window.vmMetadata = vmData.vmMetadata;
           generateUIModel();
             
           if (window.pendingInitialValues) {

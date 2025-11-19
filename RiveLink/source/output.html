@@ -75,12 +75,10 @@
     function ensureRiveRuntime(desiredRuntime) {
       return new Promise((resolve, reject) => {
         if (CURRENT_RUNTIME === desiredRuntime && window.rive && typeof window.rive.Rive === 'function') {
-          console.log(`🔵 Rive runtime already loaded: ${desiredRuntime}`);
           return resolve();
         }
         const existing = document.getElementById(RUNTIME_SCRIPT_ID);
         if (existing) {
-          console.log('🔄 Removing existing Rive runtime script');
           existing.remove();
         }
         try { delete window.rive; } catch {}
@@ -90,7 +88,6 @@
         script.onload = () => {
           waitForRive().then(() => {
             CURRENT_RUNTIME = desiredRuntime;
-            console.log(`✅ Loaded Rive runtime: ${desiredRuntime}`);
             resolve();
           }).catch((e) => {
             console.error('❌ rive global not ready after script load', e);
@@ -157,8 +154,10 @@
       
       if (!defaultVM) {
         console.error("No default view model");
-        return { props, vmMetadata };
+        return { props, vmMetadata, defaultVMName: "Main" };
       }
+
+      const defaultVMName = typeof defaultVM.name === 'function' ? defaultVM.name() : defaultVM.name;
 
       // collect properties from the default view model
       collectProperties(vmi, defaultVM, props, "");
@@ -193,35 +192,31 @@
             processedVMs.add(matchedVM);
             const vmName = typeof matchedVM.name === 'function' ? matchedVM.name() : matchedVM.name;
             // Store metadata for this nested VM's properties
-            vmMetadata[prop.name] = { vmName, parentProp: prop.name };
+            vmMetadata[prop.name] = { vmName, parentProp: prop.name, parentVMName: defaultVMName };
             // collect properties from a nested view model
             collectProperties(vmi, matchedVM, props, prop.name);
           }
         }
       }
       
-      return { props, vmMetadata };
+      return { props, vmMetadata, defaultVMName };
     }
     
     // Initialize Singular Widget first (wait for initial values to decide runtime)
     SingularWidget.init({
       onInit: (json) => {
         window.pendingInitialValues = json;
-        console.log('⏳ onInit: waiting for first values to choose runtime...');
         // Fallback: if onValue doesn't arrive soon, apply onInit values
         setTimeout(async () => {
           if (HAS_INITIAL_VALUES || INIT_DONE) return;
           try {
             const useWebGL2 = parseBool(json.rive_renderer, true); // treat undefined as true
             const desiredRuntime = useWebGL2 ? 'webgl2' : 'canvas';
-            console.log('🟡 onInit fallback: ensuring runtime', desiredRuntime);
             await ensureRiveRuntime(desiredRuntime);
             if (typeof json.rive_file_url === 'string' && json.rive_file_url.endsWith('.riv')) {
               CURRENT_FILE_URL = json.rive_file_url;
               INIT_DONE = true;
               initializeRive(json.rive_file_url);
-            } else {
-              console.log('🟡 onInit fallback: no valid .riv url yet');
             }
           } catch (e) {
             console.error('❌ onInit fallback failed:', e);
@@ -245,13 +240,11 @@
           fit: rive.Fit[LAYOUT_FIT.charAt(0).toUpperCase() + LAYOUT_FIT.slice(1)] || rive.Fit.Contain
         }) : undefined,
         onLoad: () => {
-          console.log("✅ Rive loaded successfully, src:", fileUrl);
           resizeCanvas();
           
           // Try to find a Rive state machine
           if (r.stateMachineNames && r.stateMachineNames.length > 0) {
             STATE_MACHINE_NAME = r.stateMachineNames[0];
-            console.log("🔵 Found Rive state machine:", STATE_MACHINE_NAME);
           } else {
             console.warn("⚠️ No Rive state machines found in this file");
             STATE_MACHINE_NAME = "";
@@ -264,11 +257,10 @@
             return;
           }
 
-          console.log("🔵 Getting Rive view model properties...");
           const vmData = GetAllViewModelProperties(r);
           riveProps = vmData.props;
           window.vmMetadata = vmData.vmMetadata;
-          console.log("🔵 Found", Object.keys(riveProps).length, "Rive properties");
+          window.defaultVMName = vmData.defaultVMName;
           generateUIModel();
         
           if (window.pendingInitialValues) {
@@ -285,7 +277,6 @@
       };
     
       if (ARTBOARD_NAME) {
-        console.log("🔵 Setting artboard:", ARTBOARD_NAME);
         riveConfig.artboard = ARTBOARD_NAME;
       }
 
@@ -294,7 +285,6 @@
         riveConfig.stateMachines = STATE_MACHINE_NAME;
       }
       
-      console.log("🔵 Creating new Rive instance with runtime:", CURRENT_RUNTIME);
       r = new rive.Rive(riveConfig);
       INIT_DONE = true;
     }
@@ -357,10 +347,12 @@
         
         const displayName = name.includes('_') ? name.split('_').pop() : name;
         
-        let viewModelName = "Root View Model";
+        let viewModelName = window.defaultVMName || "Main";
         let parentPropertyName = null;
         
         // Check if this property belongs to a nested view model
+        let groupKey = viewModelName; // Default to root VM name
+        
         if (name.includes('_') && window.vmMetadata) {
           const parts = name.split('_');
           const pathPrefix = parts[0]; // e.g., "Propertyofscoreboard"
@@ -369,16 +361,19 @@
           if (window.vmMetadata[pathPrefix]) {
             viewModelName = window.vmMetadata[pathPrefix].vmName;
             parentPropertyName = window.vmMetadata[pathPrefix].parentProp;
+            // Use parent property as grouping key to keep components separate
+            groupKey = pathPrefix;
           } else {
             // Fallback for root properties with underscores
             parts.pop();
             viewModelName = parts.join(' ');
+            groupKey = viewModelName;
           }
         }
         
-        // Store parent info for this view model
-        if (parentPropertyName && !viewModelParentInfo[viewModelName]) {
-          viewModelParentInfo[viewModelName] = parentPropertyName;
+        // Store metadata for each group
+        if (!viewModelParentInfo[groupKey]) {
+          viewModelParentInfo[groupKey] = { vmName: viewModelName, parentProp: parentPropertyName };
         }
         
         let fieldType = prop.type;
@@ -414,10 +409,10 @@
           defaultValue: defaultValue
         });
         
-        if (!groupedProperties[viewModelName]) {
-          groupedProperties[viewModelName] = [];
+        if (!groupedProperties[groupKey]) {
+          groupedProperties[groupKey] = [];
         }
-        groupedProperties[viewModelName].push(fieldId);
+        groupedProperties[groupKey].push(fieldId);
       }
 
       const groups = [];
@@ -434,17 +429,33 @@
       }
       
       // Add other property groups
-      for (const [vmName, childIds] of Object.entries(groupedProperties)) {
-        let groupTitle = vmName;
+      for (const [groupKey, childIds] of Object.entries(groupedProperties)) {
+        const groupInfo = viewModelParentInfo[groupKey];
+        let groupTitle = groupKey;
+        let vmName = groupKey;
         
-        // Check if this view model has parent info (nested view model)
-        if (viewModelParentInfo[vmName]) {
-          const cleanParentName = viewModelParentInfo[vmName].replace(/[^a-zA-Z0-9]/g, '');
-          groupTitle = `${vmName} - (${cleanParentName})`;
+        // Check if this is a nested view model group
+        if (groupInfo && groupInfo.parentProp) {
+          vmName = groupInfo.vmName;
+          const parentProp = groupInfo.parentProp;
+          const cleanParentProp = parentProp.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+          
+          // Look up metadata for this nested VM
+          if (window.vmMetadata && window.vmMetadata[parentProp]) {
+            const metadata = window.vmMetadata[parentProp];
+            const parentVMName = metadata.parentVMName || 'Main';
+            groupTitle = `${parentVMName} (${cleanParentProp}: ${vmName})`;
+          } else {
+            groupTitle = `${vmName} - ${cleanParentProp}`;
+          }
+        } else if (groupInfo && groupInfo.vmName) {
+          // Root VM group
+          vmName = groupInfo.vmName;
+          groupTitle = vmName;
         }
         
         groups.push({
-          id: toAlphanumericId(vmName) + "group",
+          id: toAlphanumericId(groupKey) + "group",
           title: groupTitle,
           width: "double",
           toolTip: `Properties from ${vmName}`,
@@ -459,27 +470,12 @@
           groups: groups
         });
         
-        // Check the response to see if it worked
-        console.log("📥 Dynamic UI Response:", JSON.stringify(res, null, 2));
-        
         if (res && res.success === false) {
-          console.error("❌ Failed to set dynamic UI:");
-          console.error("Error message:", res.message || res.error || "Unknown error");
-          console.error("Full response:", res);
-        } else if (res && res.success === true) {
-          console.log("✅ Dynamic UI created successfully!");
-        } else {
-          console.warn("⚠️ Unexpected response format:", res);
+          console.error("❌ Failed to set dynamic UI:", res.message || res.error || "Unknown error");
         }
       } else {
         console.error("❌ SingularWidget.setCustomWidgetUI is not available. Please update the Singular Widget SDK to the latest version.");
-        console.log("📋 Copy the following model to the Widget Manager UI:");
-        console.log(JSON.stringify({ model: { fields, groups } }, null, 2));
       }
-      
-      // Also log to console for reference
-      console.log("\n📋 Dynamic UI Configuration:");
-      console.log(JSON.stringify({ fields, groups }, null, 2));
     }
 
     // Generate alphanumeric ID from a string (utility function)
@@ -490,8 +486,6 @@
     // Handle singular value change
     // if a value such as artboard or layout changes, then it reloads Rive (required)
     async function onSingularValue(json) {
-      console.log("🔵 onSingularValue called with:", json);
-      
       window.pendingInitialValues = window.pendingInitialValues 
         ? { ...window.pendingInitialValues, ...json } 
         : json;
@@ -503,18 +497,15 @@
         
         if (!HAS_INITIAL_VALUES) {
           HAS_INITIAL_VALUES = true;
-          console.log(`🟢 Initial values received; desired runtime: ${desiredRuntime}`);
         }
         
         const runtimeChanged = (CURRENT_RUNTIME && CURRENT_RUNTIME !== desiredRuntime);
         const needRuntimeLoad = !CURRENT_RUNTIME || runtimeChanged || !(window.rive && typeof window.rive.Rive === 'function');
 
         if (needRuntimeLoad) {
-          console.log(`🔵 Ensuring runtime '${desiredRuntime}' is loaded... (current: ${CURRENT_RUNTIME || 'none'})`);
           // If switching runtime and an instance exists, cleanup before removing global
           if (runtimeChanged && r) {
             try {
-              console.log('🧹 Cleaning up existing Rive instance before runtime switch');
               r.cleanup();
             } catch (e) {
               console.warn('⚠️ Cleanup error before runtime switch:', e);
@@ -532,13 +523,10 @@
 
       // Handle file URL change - if it ends with .riv, load it immediately
       if (json.rive_file_url !== undefined) {
-        console.log("🔵 File URL change detected:", json.rive_file_url);
-        
         if (typeof json.rive_file_url === 'string' && json.rive_file_url.endsWith('.riv')) {
           const newFileUrl = json.rive_file_url;
           
           if (newFileUrl !== CURRENT_FILE_URL) {
-            console.log("✅ Valid .riv file, loading:", newFileUrl);
             CURRENT_FILE_URL = newFileUrl;
             
             // Get layout if available
@@ -560,18 +548,14 @@
               reloadRive(newFileUrl, ARTBOARD_NAME, layoutFit);
             }
             return;
-          } else {
-            console.log("🔵 Same .riv file, no reload needed");
           }
         } else {
-          console.log("⚠️ File does not end with .riv:", json.rive_file_url);
           return; // Don't process further if URL is invalid
         }
       }
       
       // If we don't have a Rive instance yet but we have a valid URL, initialize it
       if (!r && CURRENT_FILE_URL && CURRENT_FILE_URL.endsWith('.riv')) {
-        console.log("🔵 No instance yet, initializing with:", CURRENT_FILE_URL);
         initializeRive(CURRENT_FILE_URL);
         return;
       }
@@ -581,7 +565,6 @@
         const layoutOptions = ["contain", "cover", "fill", "fitWidth", "fitHeight", "scaleDown", "layout", "none"];
         const newLayout = layoutOptions[parseInt(json.rive_layout)] || "contain";
         if (newLayout !== LAYOUT_FIT) {
-          console.log("🔵 Layout changed from", LAYOUT_FIT, "to", newLayout);
           LAYOUT_FIT = newLayout;
           if (r && CURRENT_FILE_URL) {
             reloadRive(CURRENT_FILE_URL, ARTBOARD_NAME, newLayout);
@@ -592,7 +575,6 @@
       
       // Handle dynamic artboard field (riveartboard) from dynamic UI
       if (json.riveartboard !== undefined && r) {
-        console.log("� Artboard change requested:", json.riveartboard);
         const artboardIndex = parseInt(json.riveartboard);
         const file = r?.file;
         if (file && artboardIndex >= 0 && artboardIndex < file.artboardCount()) {
@@ -600,7 +582,6 @@
           if (artboard) {
             const newArtboard = getArtboardName(artboard);
             if (newArtboard !== ARTBOARD_NAME) {
-              console.log("🔵 Artboard changed from", ARTBOARD_NAME, "to", newArtboard);
               ARTBOARD_NAME = newArtboard;
               if (CURRENT_FILE_URL) {
                 reloadRive(CURRENT_FILE_URL, ARTBOARD_NAME, LAYOUT_FIT);
@@ -630,12 +611,26 @@
             }
           } else if (prop.type === "color") {
             const colorData = json[alphanumericId];
-            if (colorData && typeof colorData === 'object' && 'r' in colorData) {
-              const r = Math.round(colorData.r);
-              const g = Math.round(colorData.g);
-              const b = Math.round(colorData.b);
-              const a = colorData.a !== undefined ? Math.round(colorData.a * 255) : 255;
+            let r, g, b, a;
+            
+            // Handle hex string format (from Uno Overlays)
+            if (typeof colorData === 'string' && colorData.startsWith('#')) {
+              const hex = colorData.replace('#', '');
+              r = parseInt(hex.substring(0, 2), 16);
+              g = parseInt(hex.substring(2, 4), 16);
+              b = parseInt(hex.substring(4, 6), 16);
+              a = hex.length === 8 ? parseInt(hex.substring(6, 8), 16) : 255;
               prop.accessor.rgba(r, g, b, a);
+            }
+            // Handle object format (from Singular)
+            else if (colorData && typeof colorData === 'object' && 'r' in colorData) {
+              r = Math.round(colorData.r);
+              g = Math.round(colorData.g);
+              b = Math.round(colorData.b);
+              a = colorData.a !== undefined ? Math.round(colorData.a * 255) : 255;
+              prop.accessor.rgba(r, g, b, a);
+            } else {
+              console.warn(`⚠️ Unknown color format for ${name}:`, colorData);
             }
           }
         } catch (err) {
@@ -645,10 +640,8 @@
     }
     
     function reloadRive(fileUrl, artboardName, layoutFit) {
-      console.log("🔄 reloadRive called with:", { fileUrl, artboardName, layoutFit });
       if (r) {
         try {
-          console.log("🔵 Cleaning up existing Rive instance...");
           r.cleanup();
         } catch (err) {
           console.warn("⚠️ Error cleaning up Rive:", err);
@@ -665,13 +658,11 @@
           fit: rive.Fit[layoutFit.charAt(0).toUpperCase() + layoutFit.slice(1)] || rive.Fit.Contain
         }),
         onLoad: () => {
-          console.log("✅ Rive reloaded successfully");
           resizeCanvas();
           
           // Try to find a state machine
           if (r.stateMachineNames && r.stateMachineNames.length > 0) {
             STATE_MACHINE_NAME = r.stateMachineNames[0];
-            console.log("🔵 Found state machine:", STATE_MACHINE_NAME);
           } else {
             console.warn("⚠️ No state machines found in this Rive file");
             STATE_MACHINE_NAME = "";
@@ -686,6 +677,7 @@
           const vmData = GetAllViewModelProperties(r);
           riveProps = vmData.props;
           window.vmMetadata = vmData.vmMetadata;
+          window.defaultVMName = vmData.defaultVMName;
           generateUIModel();
             
           if (window.pendingInitialValues) {
@@ -702,7 +694,6 @@
       };
       
       if (artboardName) {
-        console.log("🔵 Setting artboard for reload:", artboardName);
         riveConfig.artboard = artboardName;
       }
       
@@ -711,7 +702,6 @@
         riveConfig.stateMachines = STATE_MACHINE_NAME;
       }
       
-      console.log("🔵 Creating new Rive instance for reload with runtime:", CURRENT_RUNTIME);
       r = new rive.Rive(riveConfig);
     }
 

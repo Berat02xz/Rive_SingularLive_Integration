@@ -78,7 +78,9 @@
           return resolve();
         }
         const existing = document.getElementById(RUNTIME_SCRIPT_ID);
-        if (existing) existing.remove();
+        if (existing) {
+          existing.remove();
+        }
         try { delete window.rive; } catch {}
         const script = document.createElement('script');
         script.id = RUNTIME_SCRIPT_ID;
@@ -121,6 +123,10 @@
       for (const property of viewModel.properties) {
         if (!property?.name || property.type === "viewModel") continue;
         
+        console.log(`🔎 Property found: ${property.name}`, property);
+        console.log(`   - type: ${property.type}`);
+        console.log(`   - All property keys:`, Object.keys(property));
+        
         const propertyPath = pathPrefix ? `${pathPrefix}/${property.name}` : property.name;
         const typeMap = {
           string: () => vmi.string(propertyPath),
@@ -133,8 +139,22 @@
         
         let accessor = null;
         try {
-          if (typeMap[property.type]) {
-            accessor = typeMap[property.type]();
+          switch(property.type) {
+            case "string":  accessor = vmi.string(propertyPath); break;
+            case "number":  accessor = vmi.number(propertyPath); break;
+            case "boolean": accessor = vmi.boolean(propertyPath); break;
+            case "trigger": accessor = vmi.trigger(propertyPath); break;
+            case "color":   accessor = vmi.color(propertyPath); break;
+            case "enumType":
+              console.log(`🔍 Found ENUM property: ${propertyPath}`, property);
+              accessor = vmi.enum(propertyPath);
+              console.log(`🔍 Enum accessor created:`, accessor);
+              console.log(`🔍 Accessor keys:`, Object.keys(accessor));
+              console.log(`🔍 Accessor value:`, accessor?.value);
+              console.log(`🔍 Trying accessor.options:`, accessor?.options);
+              console.log(`🔍 Trying accessor.values:`, accessor?.values);
+              console.log(`🔍 Trying accessor.enumValues:`, accessor?.enumValues);
+              break;
           }
         } catch (err) {
           console.error(`Error accessing '${propertyPath}':`, err.message);
@@ -142,7 +162,42 @@
 
         if (accessor) {
           const propKey = propertyPath.replace(/\//g, '_');
-          props[propKey] = { type: property.type, accessor, path: propertyPath };
+          const propData = { type: property.type, accessor, path: propertyPath };
+          
+          // For enum properties, store the available options
+          if (property.type === 'enumType') {
+            console.log(`🔍 Processing ENUM property: ${propKey}`);
+            console.log(`🔍 Property object:`, property);
+            console.log(`🔍 Accessor object:`, accessor);
+            
+            // Try to get enum values - the accessor should have a list of possible values
+            let enumValues = null;
+            
+            // Try different methods to get enum values
+            if (typeof accessor.values === 'function') {
+              enumValues = accessor.values();
+            } else if (accessor.values) {
+              enumValues = accessor.values;
+            } else if (typeof accessor.enumValues === 'function') {
+              enumValues = accessor.enumValues();
+            } else if (accessor.enumValues) {
+              enumValues = accessor.enumValues;
+            } else if (typeof accessor.options === 'function') {
+              enumValues = accessor.options();
+            } else if (accessor.options) {
+              enumValues = accessor.options;
+            }
+            
+            if (enumValues && (Array.isArray(enumValues) || enumValues.length > 0)) {
+              // Convert to array if it's array-like
+              propData.enumValues = Array.isArray(enumValues) ? enumValues : Array.from(enumValues);
+              console.log(`✅ Stored enumValues:`, propData.enumValues);
+            } else {
+              console.warn(`⚠️ No enumValues found for enum: ${propKey}, will try to extract from accessor methods`);
+            }
+          }
+          
+          props[propKey] = propData;
         }
       }
     }
@@ -150,13 +205,16 @@
     // Get all view models and collect their properties
     function GetAllViewModelProperties(rive) {
       const props = {};
+      const vmMetadata = {}; // Track VM name and parent property for each property
       const vmi = rive.viewModelInstance;
       const defaultVM = rive.defaultViewModel();
       
       if (!defaultVM) {
         console.error("No default view model");
-        return props;
+        return { props, vmMetadata, defaultVMName: "Main" };
       }
+
+      const defaultVMName = typeof defaultVM.name === 'function' ? defaultVM.name() : defaultVM.name;
 
       // collect properties from the default view model
       collectProperties(vmi, defaultVM, props, "");
@@ -189,13 +247,16 @@
            
           if (matchedVM) {
             processedVMs.add(matchedVM);
+            const vmName = typeof matchedVM.name === 'function' ? matchedVM.name() : matchedVM.name;
+            // Store metadata for this nested VM's properties
+            vmMetadata[prop.name] = { vmName, parentProp: prop.name, parentVMName: defaultVMName };
             // collect properties from a nested view model
             collectProperties(vmi, matchedVM, props, prop.name);
           }
         }
       }
       
-      return props;
+      return { props, vmMetadata, defaultVMName };
     }
     
     // Initialize Singular Widget
@@ -237,7 +298,6 @@
           fit: rive.Fit[LAYOUT_FIT.charAt(0).toUpperCase() + LAYOUT_FIT.slice(1)] || rive.Fit.Contain
         }) : undefined,
         onLoad: () => {
-          console.log("✅ Rive loaded:", fileUrl);
           resizeCanvas();
           detectInOutTimelines();
           
@@ -253,7 +313,10 @@
             return;
           }
 
-          riveProps = GetAllViewModelProperties(r);
+          const vmData = GetAllViewModelProperties(r);
+          riveProps = vmData.props;
+          window.vmMetadata = vmData.vmMetadata;
+          window.defaultVMName = vmData.defaultVMName;
           generateUIModel();
         
           if (window.pendingInitialValues) {
@@ -283,6 +346,8 @@
 
     // Generate Dynamic UI model for Singular Widget
     function generateUIModel() {
+      console.log(`🚀 generateUIModel called`);
+      console.log(`🚀 Current riveProps:`, Object.keys(riveProps).length, 'properties');
       const fields = [];
       const groupedProperties = {};
       
@@ -329,23 +394,48 @@
         });
       }
       
+      // Track parent property info for nested view models
+      const viewModelParentInfo = {};
+      
       // for each property, create a UI field
       for (const [name, prop] of Object.entries(riveProps)) {
         // if a property ends with __, skip it (a way to name properties like that to hide them from singular)
-        if (name.endsWith('__')) continue;
+        if (name.includes('__')) continue;
         
         const displayName = name.includes('_') ? name.split('_').pop() : name;
         
-        let viewModelName = "Root View Model";
+        let viewModelName = window.defaultVMName || "Main";
+        let parentPropertyName = null;
         
-        if (name.includes('_')) {
+        // Check if this property belongs to a nested view model
+        let groupKey = viewModelName; // Default to root VM name
+        
+        if (name.includes('_') && window.vmMetadata) {
           const parts = name.split('_');
-          parts.pop();
-          viewModelName = parts.join(' ').replace(/^property of /i, '');
+          const pathPrefix = parts[0]; // e.g., "Propertyofscoreboard"
+          
+          // Look up the actual VM name from metadata
+          if (window.vmMetadata[pathPrefix]) {
+            viewModelName = window.vmMetadata[pathPrefix].vmName;
+            parentPropertyName = window.vmMetadata[pathPrefix].parentProp;
+            // Use parent property as grouping key to keep components separate
+            groupKey = pathPrefix;
+          } else {
+            // Fallback for root properties with underscores
+            parts.pop();
+            viewModelName = parts.join(' ');
+            groupKey = viewModelName;
+          }
+        }
+        
+        // Store metadata for each group
+        if (!viewModelParentInfo[groupKey]) {
+          viewModelParentInfo[groupKey] = { vmName: viewModelName, parentProp: parentPropertyName };
         }
         
         let fieldType = prop.type;
         let defaultValue = "";
+        let selections = undefined;
         
         if (prop.type === "trigger") {
           fieldType = "button";
@@ -365,22 +455,51 @@
             b: colorValue & 0xFF,
             a: ((colorValue >> 24) & 0xFF) / 255
           };
+        } else if (prop.type === "enumType") {
+          // Convert enum to selection widget
+          console.log(`🎯 Converting ENUM to selection widget: ${name}`);
+          console.log(`🎯 Prop data:`, prop);
+          fieldType = "selection";
+          const currentValue = prop.accessor.value || 0;
+          defaultValue = currentValue.toString();
+          console.log(`🎯 Current enum value: ${currentValue}`);
+          
+          // Create selections array from enum values
+          if (prop.enumValues && prop.enumValues.length > 0) {
+            selections = prop.enumValues.map((enumVal, index) => ({
+              id: index.toString(),
+              title: enumVal
+            }));
+            console.log(`✅ Created selections array:`, selections);
+          } else {
+            // Fallback if enumValues not available
+            console.warn(`⚠️ No enumValues available, using fallback for: ${name}`);
+            selections = [{ id: "0", title: "Option 0" }];
+          }
         }
         
         // Use alphanumeric ID for dynamic fields
         const fieldId = toAlphanumericId(name);
         
-        fields.push({
+        const field = {
           id: fieldId,
           type: fieldType,
           title: displayName.charAt(0).toUpperCase() + displayName.slice(1),
           defaultValue: defaultValue
-        });
+        };
         
-        if (!groupedProperties[viewModelName]) {
-          groupedProperties[viewModelName] = [];
+        // Add selections array for enum/selection fields
+        if (selections) {
+          field.selections = selections;
+          console.log(`✅ Added selection field:`, field);
         }
-        groupedProperties[viewModelName].push(fieldId);
+        
+        fields.push(field);
+        
+        if (!groupedProperties[groupKey]) {
+          groupedProperties[groupKey] = [];
+        }
+        groupedProperties[groupKey].push(fieldId);
       }
 
       const groups = [];
@@ -397,10 +516,34 @@
       }
       
       // Add other property groups
-      for (const [vmName, childIds] of Object.entries(groupedProperties)) {
+      for (const [groupKey, childIds] of Object.entries(groupedProperties)) {
+        const groupInfo = viewModelParentInfo[groupKey];
+        let groupTitle = groupKey;
+        let vmName = groupKey;
+        
+        // Check if this is a nested view model group
+        if (groupInfo && groupInfo.parentProp) {
+          vmName = groupInfo.vmName;
+          const parentProp = groupInfo.parentProp;
+          const cleanParentProp = parentProp.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+          
+          // Look up metadata for this nested VM
+          if (window.vmMetadata && window.vmMetadata[parentProp]) {
+            const metadata = window.vmMetadata[parentProp];
+            const parentVMName = metadata.parentVMName || 'Main';
+            groupTitle = `${parentVMName} (${cleanParentProp}: ${vmName})`;
+          } else {
+            groupTitle = `${vmName} - ${cleanParentProp}`;
+          }
+        } else if (groupInfo && groupInfo.vmName) {
+          // Root VM group
+          vmName = groupInfo.vmName;
+          groupTitle = vmName;
+        }
+        
         groups.push({
-          id: toAlphanumericId(vmName) + "group",
-          title: vmName,
+          id: toAlphanumericId(groupKey) + "group",
+          title: groupTitle,
           width: "double",
           toolTip: `Properties from ${vmName}`,
           childIds: childIds
@@ -409,16 +552,19 @@
 
       // Set dynamic UI using SingularWidget.setCustomWidgetUI
       if (typeof SingularWidget.setCustomWidgetUI === 'function') {
-        const res = SingularWidget.setCustomWidgetUI({
+        const uiModel = {
           fields: fields,
           groups: groups
-        });
+        };
+        console.log(`📤 Sending UI Model to Singular:`, JSON.stringify(uiModel, null, 2));
+        const res = SingularWidget.setCustomWidgetUI(uiModel);
+        console.log(`📥 Singular UI response:`, res);
         
         if (res && res.success === false) {
-          console.error("❌ Dynamic UI failed:", res.message || res.error);
+          console.error("❌ Failed to set dynamic UI:", res.message || res.error || "Unknown error");
         }
       } else {
-        console.error("❌ setCustomWidgetUI not available. Update SDK.");
+        console.error("❌ SingularWidget.setCustomWidgetUI is not available. Please update the Singular Widget SDK to the latest version.");
       }
     }
 
@@ -492,7 +638,7 @@
             return;
           }
         } else {
-          return;
+          return; // Don't process further if URL is invalid
         }
       }
       
@@ -547,14 +693,45 @@
             if (newValue !== prop.accessor.value) {
               prop.accessor.value = newValue;
             }
+          } else if (prop.type === "enumType") {
+            // Handle enum selection updates - need to pass the enum value name, not the index
+            const selectedIndex = parseInt(json[alphanumericId]);
+            
+            if (!isNaN(selectedIndex) && prop.enumValues && prop.enumValues[selectedIndex]) {
+              const enumValueName = prop.enumValues[selectedIndex];
+              const currentValue = prop.accessor.value;
+              
+              // Only update if the value has actually changed
+              if (currentValue !== enumValueName) {
+                console.log(`🔄 Updating enum ${name}: "${currentValue}" → "${enumValueName}"`);
+                prop.accessor.value = enumValueName;
+                console.log(`✅ Enum updated successfully`);
+              }
+            } else {
+              console.warn(`⚠️ Invalid enum index ${selectedIndex} or no enumValues for ${name}`);
+            }
           } else if (prop.type === "color") {
             const colorData = json[alphanumericId];
-            if (colorData && typeof colorData === 'object' && 'r' in colorData) {
-              const r = Math.round(colorData.r);
-              const g = Math.round(colorData.g);
-              const b = Math.round(colorData.b);
-              const a = colorData.a !== undefined ? Math.round(colorData.a * 255) : 255;
+            let r, g, b, a;
+            
+            // Handle hex string format (from Uno Overlays)
+            if (typeof colorData === 'string' && colorData.startsWith('#')) {
+              const hex = colorData.replace('#', '');
+              r = parseInt(hex.substring(0, 2), 16);
+              g = parseInt(hex.substring(2, 4), 16);
+              b = parseInt(hex.substring(4, 6), 16);
+              a = hex.length === 8 ? parseInt(hex.substring(6, 8), 16) : 255;
               prop.accessor.rgba(r, g, b, a);
+            }
+            // Handle object format (from Singular)
+            else if (colorData && typeof colorData === 'object' && 'r' in colorData) {
+              r = Math.round(colorData.r);
+              g = Math.round(colorData.g);
+              b = Math.round(colorData.b);
+              a = colorData.a !== undefined ? Math.round(colorData.a * 255) : 255;
+              prop.accessor.rgba(r, g, b, a);
+            } else {
+              console.warn(`⚠️ Unknown color format for ${name}:`, colorData);
             }
           }
         } catch (err) {
@@ -582,7 +759,6 @@
           fit: rive.Fit[layoutFit.charAt(0).toUpperCase() + layoutFit.slice(1)] || rive.Fit.Contain
         }),
         onLoad: () => {
-          console.log("✅ Rive reloaded");
           resizeCanvas();
           detectInOutTimelines();
           
@@ -597,7 +773,10 @@
             return;
           }
 
-          riveProps = GetAllViewModelProperties(r);
+          const vmData = GetAllViewModelProperties(r);
+          riveProps = vmData.props;
+          window.vmMetadata = vmData.vmMetadata;
+          window.defaultVMName = vmData.defaultVMName;
           generateUIModel();
             
           if (window.pendingInitialValues) {

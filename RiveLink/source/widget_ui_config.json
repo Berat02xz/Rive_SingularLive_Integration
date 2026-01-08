@@ -3,7 +3,7 @@
     "fields": [
       {
         "id": "rive_file_url",
-        "type": "text",
+        "type": "data",
         "title": "Rive File URL",
         "defaultValue": ""
       },

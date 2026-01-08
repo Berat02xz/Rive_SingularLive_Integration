@@ -122,6 +122,10 @@
       for (const property of viewModel.properties) {
         if (!property?.name || property.type === "viewModel") continue;
         
+        console.log(`🔎 Property found: ${property.name}`, property);
+        console.log(`   - type: ${property.type}`);
+        console.log(`   - All property keys:`, Object.keys(property));
+        
         const propertyPath = pathPrefix ? `${pathPrefix}/${property.name}` : property.name;
         let accessor = null;
         
@@ -132,7 +136,16 @@
             case "boolean": accessor = vmi.boolean(propertyPath); break;
             case "trigger": accessor = vmi.trigger(propertyPath); break;
             case "color":   accessor = vmi.color(propertyPath); break;
-            case "enum":    accessor = vmi.enum(propertyPath); break;
+            case "enumType":
+              console.log(`🔍 Found ENUM property: ${propertyPath}`, property);
+              accessor = vmi.enum(propertyPath);
+              console.log(`🔍 Enum accessor created:`, accessor);
+              console.log(`🔍 Accessor keys:`, Object.keys(accessor));
+              console.log(`🔍 Accessor value:`, accessor?.value);
+              console.log(`🔍 Trying accessor.options:`, accessor?.options);
+              console.log(`🔍 Trying accessor.values:`, accessor?.values);
+              console.log(`🔍 Trying accessor.enumValues:`, accessor?.enumValues);
+              break;
           }
         } catch (err) {
           console.error(`Error accessing '${propertyPath}':`, err.message);
@@ -140,7 +153,42 @@
 
         if (accessor) {
           const propKey = propertyPath.replace(/\//g, '_');
-          props[propKey] = { type: property.type, accessor, path: propertyPath };
+          const propData = { type: property.type, accessor, path: propertyPath };
+          
+          // For enum properties, store the available options
+          if (property.type === 'enumType') {
+            console.log(`🔍 Processing ENUM property: ${propKey}`);
+            console.log(`🔍 Property object:`, property);
+            console.log(`🔍 Accessor object:`, accessor);
+            
+            // Try to get enum values - the accessor should have a list of possible values
+            let enumValues = null;
+            
+            // Try different methods to get enum values
+            if (typeof accessor.values === 'function') {
+              enumValues = accessor.values();
+            } else if (accessor.values) {
+              enumValues = accessor.values;
+            } else if (typeof accessor.enumValues === 'function') {
+              enumValues = accessor.enumValues();
+            } else if (accessor.enumValues) {
+              enumValues = accessor.enumValues;
+            } else if (typeof accessor.options === 'function') {
+              enumValues = accessor.options();
+            } else if (accessor.options) {
+              enumValues = accessor.options;
+            }
+            
+            if (enumValues && (Array.isArray(enumValues) || enumValues.length > 0)) {
+              // Convert to array if it's array-like
+              propData.enumValues = Array.isArray(enumValues) ? enumValues : Array.from(enumValues);
+              console.log(`✅ Stored enumValues:`, propData.enumValues);
+            } else {
+              console.warn(`⚠️ No enumValues found for enum: ${propKey}, will try to extract from accessor methods`);
+            }
+          }
+          
+          props[propKey] = propData;
         }
       }
     }
@@ -291,6 +339,8 @@
 
     // Generate Dynamic UI model for Singular Widget
     function generateUIModel() {
+      console.log(`🚀 generateUIModel called`);
+      console.log(`🚀 Current riveProps:`, Object.keys(riveProps).length, 'properties');
       const fields = [];
       const groupedProperties = {};
       
@@ -378,6 +428,7 @@
         
         let fieldType = prop.type;
         let defaultValue = "";
+        let selections = undefined;
         
         if (prop.type === "trigger") {
           fieldType = "button";
@@ -397,17 +448,46 @@
             b: colorValue & 0xFF,
             a: ((colorValue >> 24) & 0xFF) / 255
           };
+        } else if (prop.type === "enumType") {
+          // Convert enum to selection widget
+          console.log(`🎯 Converting ENUM to selection widget: ${name}`);
+          console.log(`🎯 Prop data:`, prop);
+          fieldType = "selection";
+          const currentValue = prop.accessor.value || 0;
+          defaultValue = currentValue.toString();
+          console.log(`🎯 Current enum value: ${currentValue}`);
+          
+          // Create selections array from enum values
+          if (prop.enumValues && prop.enumValues.length > 0) {
+            selections = prop.enumValues.map((enumVal, index) => ({
+              id: index.toString(),
+              title: enumVal
+            }));
+            console.log(`✅ Created selections array:`, selections);
+          } else {
+            // Fallback if enumValues not available
+            console.warn(`⚠️ No enumValues available, using fallback for: ${name}`);
+            selections = [{ id: "0", title: "Option 0" }];
+          }
         }
         
         // Use alphanumeric ID for dynamic fields
         const fieldId = toAlphanumericId(name);
         
-        fields.push({
+        const field = {
           id: fieldId,
           type: fieldType,
           title: displayName.charAt(0).toUpperCase() + displayName.slice(1),
           defaultValue: defaultValue
-        });
+        };
+        
+        // Add selections array for enum/selection fields
+        if (selections) {
+          field.selections = selections;
+          console.log(`✅ Added selection field:`, field);
+        }
+        
+        fields.push(field);
         
         if (!groupedProperties[groupKey]) {
           groupedProperties[groupKey] = [];
@@ -465,10 +545,13 @@
 
       // Set dynamic UI using SingularWidget.setCustomWidgetUI
       if (typeof SingularWidget.setCustomWidgetUI === 'function') {
-        const res = SingularWidget.setCustomWidgetUI({
+        const uiModel = {
           fields: fields,
           groups: groups
-        });
+        };
+        console.log(`📤 Sending UI Model to Singular:`, JSON.stringify(uiModel, null, 2));
+        const res = SingularWidget.setCustomWidgetUI(uiModel);
+        console.log(`📥 Singular UI response:`, res);
         
         if (res && res.success === false) {
           console.error("❌ Failed to set dynamic UI:", res.message || res.error || "Unknown error");
@@ -608,6 +691,23 @@
             const newValue = json[alphanumericId];
             if (newValue !== prop.accessor.value) {
               prop.accessor.value = newValue;
+            }
+          } else if (prop.type === "enumType") {
+            // Handle enum selection updates - need to pass the enum value name, not the index
+            const selectedIndex = parseInt(json[alphanumericId]);
+            
+            if (!isNaN(selectedIndex) && prop.enumValues && prop.enumValues[selectedIndex]) {
+              const enumValueName = prop.enumValues[selectedIndex];
+              const currentValue = prop.accessor.value;
+              
+              // Only update if the value has actually changed
+              if (currentValue !== enumValueName) {
+                console.log(`🔄 Updating enum ${name}: "${currentValue}" → "${enumValueName}"`);
+                prop.accessor.value = enumValueName;
+                console.log(`✅ Enum updated successfully`);
+              }
+            } else {
+              console.warn(`⚠️ Invalid enum index ${selectedIndex} or no enumValues for ${name}`);
             }
           } else if (prop.type === "color") {
             const colorData = json[alphanumericId];

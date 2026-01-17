@@ -88,15 +88,14 @@
         script.onload = () => {
           waitForRive().then(() => {
             CURRENT_RUNTIME = desiredRuntime;
-            console.log(`✅ Loaded runtime: ${desiredRuntime}`);
             resolve();
           }).catch((e) => {
-            console.error('❌ Runtime load error:', e);
+            console.error('❌ rive global not ready after script load', e);
             reject(e);
           });
         };
         script.onerror = (e) => {
-          console.error('❌ Failed to load runtime:', desiredRuntime, e);
+          console.error('❌ Failed to load Rive runtime', desiredRuntime, e);
           reject(e);
         };
         document.body.prepend(script);
@@ -116,7 +115,7 @@
       return typeof artboard.name === 'function' ? artboard.name() : artboard.name;
     }
 
-    // Collect properties from a view model
+    // collect properties from a view model
     function collectProperties(vmi, viewModel, props, pathPrefix = "") {
       if (!viewModel.properties?.length) return;
 
@@ -128,16 +127,8 @@
         console.log(`   - All property keys:`, Object.keys(property));
         
         const propertyPath = pathPrefix ? `${pathPrefix}/${property.name}` : property.name;
-        const typeMap = {
-          string: () => vmi.string(propertyPath),
-          number: () => vmi.number(propertyPath),
-          boolean: () => vmi.boolean(propertyPath),
-          trigger: () => vmi.trigger(propertyPath),
-          color: () => vmi.color(propertyPath),
-          enum: () => vmi.enum(propertyPath)
-        };
-        
         let accessor = null;
+        
         try {
           switch(property.type) {
             case "string":  accessor = vmi.string(propertyPath); break;
@@ -259,7 +250,7 @@
       return { props, vmMetadata, defaultVMName };
     }
     
-    // Initialize Singular Widget
+    // Initialize Singular Widget first (wait for initial values to decide runtime)
     SingularWidget.init({
       onInit: (json) => {
         window.pendingInitialValues = json;
@@ -267,7 +258,7 @@
         setTimeout(async () => {
           if (HAS_INITIAL_VALUES || INIT_DONE) return;
           try {
-            const useWebGL2 = parseBool(json.rive_renderer, true);
+            const useWebGL2 = parseBool(json.rive_renderer, true); // treat undefined as true
             const desiredRuntime = useWebGL2 ? 'webgl2' : 'canvas';
             await ensureRiveRuntime(desiredRuntime);
             if (typeof json.rive_file_url === 'string' && json.rive_file_url.endsWith('.riv')) {
@@ -276,13 +267,12 @@
               initializeRive(json.rive_file_url);
             }
           } catch (e) {
-            console.error('❌ Init failed:', e);
+            console.error('❌ onInit fallback failed:', e);
           }
         }, 500);
       },
       onValue: onSingularValue,
       onButtonClicked: onSingularButtonClicked,
-      onAnimation: onSingularAnimation,
     });
     
     // Initialize Rive with a given file URL
@@ -290,7 +280,7 @@
       const riveConfig = {
         src: fileUrl,
         canvas: document.getElementById("canvas"),
-        autoplay: true, // Keep autoplay for state machines to process view model updates
+        autoplay: true,
         autoBind: true,
         ...(CURRENT_RUNTIME === 'webgl2' ? { useOffscreenRenderer: USE_OFFSCREEN_RENDERER } : {}),
         // apply current layout fit on initial load as well
@@ -299,16 +289,18 @@
         }) : undefined,
         onLoad: () => {
           resizeCanvas();
-          detectInOutTimelines();
           
-          // Find state machine
+          // Try to find a Rive state machine
           if (r.stateMachineNames && r.stateMachineNames.length > 0) {
             STATE_MACHINE_NAME = r.stateMachineNames[0];
           } else {
+            console.warn("⚠️ No Rive state machines found in this file");
             STATE_MACHINE_NAME = "";
           }
           
           if (r.viewModelCount === 0) {
+            console.log("⚠️ No Rive view models found in Rive file");
+            // Still generate UI even without Rive view models (a.k.a only artboard selection)
             generateUIModel();
             return;
           }
@@ -336,6 +328,7 @@
         riveConfig.artboard = ARTBOARD_NAME;
       }
 
+      // Only add Rive stateMachines if we know the name
       if (STATE_MACHINE_NAME) {
         riveConfig.stateMachines = STATE_MACHINE_NAME;
       }
@@ -353,7 +346,7 @@
       
       // Generate alphanumeric ID from a string
       function toAlphanumericId(str) {
-        return str.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+        return str.replace(/[^a-zA-Z0-9]/g, '');
       }
       
       // Get available artboards from the Rive file
@@ -570,16 +563,17 @@
 
     // Generate alphanumeric ID from a string (utility function)
     function toAlphanumericId(str) {
-      return str.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+      return str.replace(/[^a-zA-Z0-9]/g, '');
     }
     
-    // Handle singular value changes
+    // Handle singular value change
+    // if a value such as artboard or layout changes, then it reloads Rive (required)
     async function onSingularValue(json) {
       window.pendingInitialValues = window.pendingInitialValues 
         ? { ...window.pendingInitialValues, ...json } 
         : json;
 
-      // Check for runtime change and ensure it's loaded
+      // Check for runtime change first and ensure it's loaded
       if (json.rive_renderer !== undefined) {
         const desiredRenderer = parseBool(json.rive_renderer, true);
         const desiredRuntime = desiredRenderer ? 'webgl2' : 'canvas';
@@ -592,24 +586,25 @@
         const needRuntimeLoad = !CURRENT_RUNTIME || runtimeChanged || !(window.rive && typeof window.rive.Rive === 'function');
 
         if (needRuntimeLoad) {
+          // If switching runtime and an instance exists, cleanup before removing global
           if (runtimeChanged && r) {
             try {
               r.cleanup();
             } catch (e) {
-              console.warn('⚠️ Cleanup error:', e);
+              console.warn('⚠️ Cleanup error before runtime switch:', e);
             }
             r = null;
           }
           try {
             await ensureRiveRuntime(desiredRuntime);
           } catch (e) {
-            console.error('❌ Runtime load failed:', e);
+            console.error('❌ Failed to load desired runtime:', desiredRuntime, e);
             return;
           }
         }
       }
 
-      // Handle file URL change
+      // Handle file URL change - if it ends with .riv, load it immediately
       if (json.rive_file_url !== undefined) {
         if (typeof json.rive_file_url === 'string' && json.rive_file_url.endsWith('.riv')) {
           const newFileUrl = json.rive_file_url;
@@ -642,7 +637,7 @@
         }
       }
       
-      // Initialize if needed
+      // If we don't have a Rive instance yet but we have a valid URL, initialize it
       if (!r && CURRENT_FILE_URL && CURRENT_FILE_URL.endsWith('.riv')) {
         initializeRive(CURRENT_FILE_URL);
         return;
@@ -661,7 +656,7 @@
         }
       }
       
-      // Handle artboard change
+      // Handle dynamic artboard field (riveartboard) from dynamic UI
       if (json.riveartboard !== undefined && r) {
         const artboardIndex = parseInt(json.riveartboard);
         const file = r?.file;
@@ -680,9 +675,13 @@
         }
       }
       
-      if (!r) return;
+      // Don't process dynamic field updates if we don't have a valid Rive file loaded
+      if (!r) {
+        console.log("⚠️ No Rive instance loaded");
+        return;
+      }
 
-      // Handle dynamic field updates
+      // Handle dynamic field updates - map alphanumeric IDs back to property names
       for (const [name, prop] of Object.entries(riveProps)) {
         const alphanumericId = toAlphanumericId(name);
         if (json[alphanumericId] === undefined) continue;
@@ -745,14 +744,14 @@
         try {
           r.cleanup();
         } catch (err) {
-          console.warn("⚠️ Cleanup error:", err);
+          console.warn("⚠️ Error cleaning up Rive:", err);
         }
       }
       
       const riveConfig = {
         src: fileUrl,
         canvas: document.getElementById("canvas"),
-        autoplay: true, // Keep autoplay for state machines to process view model updates
+        autoplay: true,
         autoBind: true,
         ...(CURRENT_RUNTIME === 'webgl2' ? { useOffscreenRenderer: USE_OFFSCREEN_RENDERER } : {}),
         layout: new rive.Layout({
@@ -760,16 +759,18 @@
         }),
         onLoad: () => {
           resizeCanvas();
-          detectInOutTimelines();
           
-          // Find state machine
+          // Try to find a state machine
           if (r.stateMachineNames && r.stateMachineNames.length > 0) {
             STATE_MACHINE_NAME = r.stateMachineNames[0];
           } else {
+            console.warn("⚠️ No state machines found in this Rive file");
             STATE_MACHINE_NAME = "";
           }
           
           if (r.viewModelCount === 0) {
+            console.log("⚠️ No view models found in reloaded Rive file");
+            // Still generate UI even without view models
             return;
           }
 
@@ -796,6 +797,7 @@
         riveConfig.artboard = artboardName;
       }
       
+      // Only add stateMachines if we know the name
       if (STATE_MACHINE_NAME) {
         riveConfig.stateMachines = STATE_MACHINE_NAME;
       }
@@ -803,167 +805,14 @@
       r = new rive.Rive(riveConfig);
     }
 
-    // ---- In/Out timeline detection & playback integration ----
-    let HAS_IN_TIMELINE = false;
-    let HAS_OUT_TIMELINE = false;
-    let IN_DURATION = null;
-    let OUT_DURATION = null;
-    let LAST_PLAYED_TIMELINE = null; // Track which timeline was last played
-
-    function detectInOutTimelines() {
-      if (!r) return;
-      try {
-        const names = new Set();
-        const file = r.file;
-        if (file) {
-          let artboard = null;
-          if (ARTBOARD_NAME) {
-            for (let i = 0; i < file.artboardCount(); i++) {
-              const ab = file.artboardByIndex(i);
-              if (ab && (typeof ab.name === 'function' ? ab.name() : ab.name) === ARTBOARD_NAME) {
-                artboard = ab; break;
-              }
-            }
-          }
-          if (!artboard) artboard = file.artboardByIndex(0);
-          if (artboard && artboard.animationCount) {
-            for (let i = 0; i < artboard.animationCount(); i++) {
-              const anim = artboard.animationByIndex(i);
-              if (!anim) continue;
-              const animName = typeof anim.name === 'function' ? anim.name() : anim.name;
-              names.add(animName);
-              if (animName === 'In') IN_DURATION = typeof anim.duration === 'function' ? anim.duration() : anim.duration;
-              if (animName === 'Out') OUT_DURATION = typeof anim.duration === 'function' ? anim.duration() : anim.duration;
-            }
-          }
-        }
-        if (r.animationNames && r.animationNames.length) {
-          r.animationNames.forEach(n => names.add(n));
-        }
-        HAS_IN_TIMELINE = names.has('In');
-        HAS_OUT_TIMELINE = names.has('Out');
-        console.log(`🔍 Timelines: In=${HAS_IN_TIMELINE}, Out=${HAS_OUT_TIMELINE}`);
-        flushPendingTimelineEvents();
-      } catch (e) {
-        console.warn('⚠️ Timeline detection error:', e);
-      }
-    }
-
-    function playTimeline(name) {
-      if (!r) return;
-      
-      // Verify animation exists
-      let found = false;
-      try {
-        const file = r.file;
-        if (file) {
-          let artboard = null;
-          if (ARTBOARD_NAME) {
-            for (let i = 0; i < file.artboardCount(); i++) {
-              const ab = file.artboardByIndex(i);
-              if (ab && (typeof ab.name === 'function' ? ab.name() : ab.name) === ARTBOARD_NAME) {
-                artboard = ab; break;
-              }
-            }
-          }
-          if (!artboard) artboard = file.artboardByIndex(0);
-          
-          if (artboard && artboard.animationCount) {
-            for (let i = 0; i < artboard.animationCount(); i++) {
-              const anim = artboard.animationByIndex(i);
-              const animName = typeof anim.name === 'function' ? anim.name() : anim.name;
-              if (animName === name) { 
-                found = true; 
-                break; 
-              }
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('⚠️ Animation check error:', e);
-      }
-      
-      if (!found) return;
-      
-      try {
-        if (r.stateMachineInputs) {
-          r.stop();
-        } else {
-          r.pause();
-        }
-        
-        r.play([name]);
-        LAST_PLAYED_TIMELINE = name;
-        console.log(`🎬 Playing '${name}'`);
-      } catch (e) {
-        console.error(`❌ Play failed '${name}':`, e);
-      }
-    }
-
-    // Queue early animation events
-    const pendingTimelineEvents = [];
-    function flushPendingTimelineEvents() {
-      if (!r || (!HAS_IN_TIMELINE && !HAS_OUT_TIMELINE) || !pendingTimelineEvents.length) return;
-      const toProcess = [...pendingTimelineEvents];
-      pendingTimelineEvents.length = 0;
-      toProcess.forEach(ev => {
-        if (ev.timeline === 'In' && HAS_IN_TIMELINE) playTimeline('In');
-        if (ev.timeline === 'Out' && HAS_OUT_TIMELINE) playTimeline('Out');
-      });
-    }
-
-    // Handle Singular animation events
-    function onSingularAnimation(evt) {
-      if (!evt || !evt.timeline) return;
-      
-      // Handle 'stop' event - reload only after 'In'
-      if (evt.event === 'stop') {
-        if (LAST_PLAYED_TIMELINE === 'In') {
-          console.log('🔄 In finished, reloading');
-          if (r && CURRENT_FILE_URL) {
-            reloadRive(CURRENT_FILE_URL, ARTBOARD_NAME, LAYOUT_FIT);
-          }
-        }
-        return;
-      }
-      
-      // Only respond to 'start' events
-      if (evt.event !== 'start') return;
-      
-      // Queue if timelines not detected yet
-      if (!r || (!HAS_IN_TIMELINE && !HAS_OUT_TIMELINE)) {
-        pendingTimelineEvents.push(evt);
-        return;
-      }
-      
-      // Use newState to determine timeline (In or Out)
-      const targetTimeline = evt.newState || evt.timeline;
-      
-      if (targetTimeline === 'In' && HAS_IN_TIMELINE) {
-        playTimeline('In');
-      } else if (targetTimeline && targetTimeline.startsWith('Out') && HAS_OUT_TIMELINE) {
-        playTimeline('Out');
-      }
-    }
-
-    // Handle button clicks
+    // Handle button clicks from Singular Widget
     function onSingularButtonClicked(action) {
-      // Ensure state machine is running
-      if (r && STATE_MACHINE_NAME) {
-        try {
-          if (!r.isPlaying || r.isPaused) {
-            r.play(STATE_MACHINE_NAME);
-          }
-        } catch (e) {
-          console.warn('⚠️ State machine restart error:', e);
-        }
-      }
-      
-      // Map alphanumeric ID to property
+      // Map alphanumeric ID back to property name
       for (const [name, prop] of Object.entries(riveProps)) {
         const alphanumericId = toAlphanumericId(name);
         if (alphanumericId === action && prop?.type === "trigger" && typeof prop.accessor.trigger === "function") {
           prop.accessor.trigger();
+          generateUIModel();
           return;
         }
       }

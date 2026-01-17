@@ -346,7 +346,7 @@
       
       // Generate alphanumeric ID from a string
       function toAlphanumericId(str) {
-        return str.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+        return str.replace(/[^a-zA-Z0-9]/g, '');
       }
       
       // Get available artboards from the Rive file
@@ -477,7 +477,7 @@
         const field = {
           id: fieldId,
           type: fieldType,
-          title: displayName.charAt(0).toUpperCase() + displayName.slice(1),
+          title: displayName,
           defaultValue: defaultValue
         };
         
@@ -563,7 +563,7 @@
 
     // Generate alphanumeric ID from a string (utility function)
     function toAlphanumericId(str) {
-      return str.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+      return str.replace(/[^a-zA-Z0-9]/g, '');
     }
     
     // Handle singular value change

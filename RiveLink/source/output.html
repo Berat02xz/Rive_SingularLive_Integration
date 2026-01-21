@@ -136,6 +136,9 @@
             case "boolean": accessor = vmi.boolean(propertyPath); break;
             case "trigger": accessor = vmi.trigger(propertyPath); break;
             case "color":   accessor = vmi.color(propertyPath); break;
+            case "image":
+              accessor = vmi.image(propertyPath);
+              break;
             case "enumType":
               console.log(`🔍 Found ENUM property: ${propertyPath}`, property);
               accessor = vmi.enum(propertyPath);
@@ -457,6 +460,29 @@
         } else if (prop.type === "boolean") {
           fieldType = "checkbox";
           defaultValue = prop.accessor.value || false;
+        } else if (prop.type === "image") {
+          // Map image properties to image fields (for URL or file upload)
+          fieldType = "image";
+          // Get the current image asset URL from Rive as default
+          try {
+            const imageValue = prop.accessor.value;
+            // Try different ways to get the image URL
+            if (imageValue) {
+              if (imageValue.cdnUrl) {
+                defaultValue = imageValue.cdnUrl;
+              } else if (imageValue._nativeImage?.cdnUrl) {
+                defaultValue = imageValue._nativeImage.cdnUrl;
+              } else if (imageValue.nativeImage?.cdnUrl) {
+                defaultValue = imageValue.nativeImage.cdnUrl;
+              } else {
+                defaultValue = "";
+              }
+            } else {
+              defaultValue = "";
+            }
+          } catch (err) {
+            defaultValue = "";
+          }
         } else if (prop.type === "color") {
           const colorValue = prop.accessor.value;
           defaultValue = {
@@ -748,6 +774,67 @@
             if (newValue !== prop.accessor.value) {
               prop.accessor.value = newValue;
             }
+          } else if (prop.type === "image") {
+            // Handle image property updates - set from URL or data
+            const imageValue = json[alphanumericId];
+            
+            // If empty, skip update to keep Rive's default/placeholder image
+            if (!imageValue || imageValue === "") {
+              continue;
+            }
+            
+            // Singular image fields can send data in different formats
+            let imageUrl = null;
+            
+            // Check if it's an object with url or data property
+            if (typeof imageValue === 'object') {
+              imageUrl = imageValue.url || imageValue.data || imageValue.src;
+            } else if (typeof imageValue === 'string') {
+              imageUrl = imageValue;
+            }
+            
+            if (!imageUrl) {
+              continue;
+            }
+            
+            // Handle protocol-relative URLs (//domain.com/...) and add https:// if needed
+            if (imageUrl.startsWith('//')) {
+              imageUrl = 'https:' + imageUrl;
+            } else if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://') && !imageUrl.startsWith('data:')) {
+              imageUrl = 'https://' + imageUrl;
+            }
+            
+            // Check if this URL is different from the current one - skip if same
+            if (prop.currentImageUrl === imageUrl) {
+              continue;
+            }
+            
+            // Store the new URL
+            prop.currentImageUrl = imageUrl;
+            
+            // Fetch and decode the image
+            (async () => {
+              try {
+                const res = await fetch(imageUrl);
+                
+                if (!res.ok) {
+                  throw new Error(`HTTP error! status: ${res.status}`);
+                }
+                
+                const { decodeImage } = window.rive;
+                
+                if (!decodeImage || typeof decodeImage !== 'function') {
+                  console.error(`❌ decodeImage function not found`);
+                  return;
+                }
+                
+                const image = await decodeImage(new Uint8Array(await res.arrayBuffer()));
+                prop.accessor.value = image;
+                
+              } catch (error) {
+                console.error(`❌ Failed to load image ${name}:`, error);
+              }
+            })();
           } else if (prop.type === "enumType") {
             // Handle enum selection updates - need to pass the enum value name, not the index
             const selectedIndex = parseInt(json[alphanumericId]);

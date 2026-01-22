@@ -18,261 +18,152 @@
   </style>
 </head>
 <body>
-  <!-- Rive runtime will be loaded dynamically: webgl2 or canvas -->
-
   <canvas id="canvas"></canvas>
   <script src="https://beta.singular.live/libs/singularwidget/1.0.4/singularwidget.js"></script>
+  
   <script>
     let riveProps = {};
     let r = null;
     let ARTBOARD_NAME = "";
-    let STATE_MACHINE_NAME = "State Machine 1";
-    let LAYOUT_FIT = "contain";
+    let STATE_MACHINE_NAME = "";
+    let LAYOUT_FIT = "Contain";
     let CURRENT_FILE_URL = "";
-    // Renderer selection: 'webgl2' (default) or 'canvas'
-  let CURRENT_RUNTIME = null; // don't assume until first values arrive
-  let HAS_INITIAL_VALUES = false;
-  let INIT_DONE = false;
-  const WIDGET_STATE = { fileUrl: '', layoutFit: 'contain', artboardIndex: 0, stateMachineIndex: 0, renderer: true };
-
-    // Robust boolean coercion for values coming from Singular (can be boolean, string, number)
-    function parseBool(value, defaultIfUndef = true) {
-      if (value === undefined || value === null) return defaultIfUndef;
-      if (typeof value === 'boolean') return value;
-      if (typeof value === 'number') return value !== 0;
-      if (typeof value === 'string') {
-        const v = value.trim().toLowerCase();
-        if (v === 'true' || v === '1' || v === 'on' || v === 'yes') return true;
-        if (v === 'false' || v === '0' || v === 'off' || v === 'no') return false;
-        return defaultIfUndef; // unknown strings fall back to default
-      }
-      return !!value;
-    }
+    let CURRENT_RUNTIME = "canvas";
+    const WIDGET_STATE = { fileUrl: '', layoutFit: 'Contain', artboardIndex: 0, stateMachineIndex: 0, renderer: true };
+    
+    const LAYOUT_OPTIONS = ["Contain", "Cover", "Fill", "FitWidth", "FitHeight", "ScaleDown", "Layout", "None"];
+    
     const RUNTIME_SOURCES = {
       webgl2: 'https://unpkg.com/@rive-app/webgl2',
       canvas: 'https://unpkg.com/@rive-app/canvas'
     };
     const RUNTIME_SCRIPT_ID = 'rive-runtime-script';
-    // Offscreen renderer is only relevant to webgl; enable as best-practice
     const USE_OFFSCREEN_RENDERER = true;
 
-    // Dynamically load the desired Rive runtime
-    function waitForRive(maxMs = 4000, intervalMs = 50) {
-      return new Promise((resolve, reject) => {
-        const start = Date.now();
-        const timer = setInterval(() => {
-          if (window.rive && typeof window.rive.Rive === 'function') {
-            clearInterval(timer);
-            resolve();
-          } else if (Date.now() - start > maxMs) {
-            clearInterval(timer);
-            reject(new Error('Timed out waiting for rive global'));
-          }
-        }, intervalMs);
+    // Toggles WebGL2 or Canvas runtime
+    async function toggleRiveRuntime(desiredRuntime) {
+      if (CURRENT_RUNTIME === desiredRuntime && window.rive) {
+        return;
+      }
+      const existing = document.getElementById(RUNTIME_SCRIPT_ID);
+      if (existing) existing.remove();
+      try { delete window.rive; } catch {}
+      const script = document.createElement('script');
+      script.id = RUNTIME_SCRIPT_ID;
+      script.src = RUNTIME_SOURCES[desiredRuntime];
+      document.body.prepend(script);
+      
+      await new Promise((resolve, reject) => {
+        script.onload = resolve;
+        script.onerror = () => reject(new Error(`Failed to load ${desiredRuntime}`));
       });
-    }
-
-    function ensureRiveRuntime(desiredRuntime) {
-      return new Promise((resolve, reject) => {
-        if (CURRENT_RUNTIME === desiredRuntime && window.rive && typeof window.rive.Rive === 'function') {
-          return resolve();
-        }
-        const existing = document.getElementById(RUNTIME_SCRIPT_ID);
-        if (existing) {
-          existing.remove();
-        }
-        try { delete window.rive; } catch {}
-        const script = document.createElement('script');
-        script.id = RUNTIME_SCRIPT_ID;
-        script.src = RUNTIME_SOURCES[desiredRuntime];
-        script.onload = () => {
-          waitForRive().then(() => {
-            CURRENT_RUNTIME = desiredRuntime;
-            resolve();
-          }).catch((e) => {
-            console.error('❌ rive global not ready after script load', e);
-            reject(e);
-          });
-        };
-        script.onerror = (e) => {
-          console.error('❌ Failed to load Rive runtime', desiredRuntime, e);
-          reject(e);
-        };
-        document.body.prepend(script);
-      });
+      
+      CURRENT_RUNTIME = desiredRuntime;
     }
     
+    // Resize canvas to fit window
     function resizeCanvas() {
       const canvas = document.getElementById("canvas");
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
-      if (r) r.resizeDrawingSurfaceToCanvas();
+      r.resizeDrawingSurfaceToCanvas();
     }
     
     window.addEventListener('resize', resizeCanvas);
 
-    function getArtboardName(artboard) {
-      return typeof artboard.name === 'function' ? artboard.name() : artboard.name;
-    }
-
-    // collect properties from a view model
-    function collectProperties(vmi, viewModel, props, pathPrefix = "") {
-      if (!viewModel.properties?.length) return;
-
-      for (const property of viewModel.properties) {
-        if (!property?.name || property.type === "viewModel") continue;
-        
-        console.log(`🔎 Property found: ${property.name}`, property);
-        console.log(`   - type: ${property.type}`);
-        console.log(`   - All property keys:`, Object.keys(property));
-        
-        const propertyPath = pathPrefix ? `${pathPrefix}/${property.name}` : property.name;
-        let accessor = null;
-        
-        try {
-          switch(property.type) {
-            case "string":  accessor = vmi.string(propertyPath); break;
-            case "number":  accessor = vmi.number(propertyPath); break;
-            case "boolean": accessor = vmi.boolean(propertyPath); break;
-            case "trigger": accessor = vmi.trigger(propertyPath); break;
-            case "color":   accessor = vmi.color(propertyPath); break;
-            case "image":
-              accessor = vmi.image(propertyPath);
-              break;
-            case "enumType":
-              console.log(`🔍 Found ENUM property: ${propertyPath}`, property);
-              accessor = vmi.enum(propertyPath);
-              console.log(`🔍 Enum accessor created:`, accessor);
-              console.log(`🔍 Accessor keys:`, Object.keys(accessor));
-              console.log(`🔍 Accessor value:`, accessor?.value);
-              console.log(`🔍 Trying accessor.options:`, accessor?.options);
-              console.log(`🔍 Trying accessor.values:`, accessor?.values);
-              console.log(`🔍 Trying accessor.enumValues:`, accessor?.enumValues);
-              break;
-          }
-        } catch (err) {
-          console.error(`Error accessing '${propertyPath}':`, err.message);
-        }
-
-        if (accessor) {
-          const propKey = propertyPath.replace(/\//g, '_');
-          const propData = { type: property.type, accessor, path: propertyPath };
-          
-          // For enum properties, store the available options
-          if (property.type === 'enumType') {
-            console.log(`🔍 Processing ENUM property: ${propKey}`);
-            console.log(`🔍 Property object:`, property);
-            console.log(`🔍 Accessor object:`, accessor);
-            
-            // Try to get enum values - the accessor should have a list of possible values
-            let enumValues = null;
-            
-            // Try different methods to get enum values
-            if (typeof accessor.values === 'function') {
-              enumValues = accessor.values();
-            } else if (accessor.values) {
-              enumValues = accessor.values;
-            } else if (typeof accessor.enumValues === 'function') {
-              enumValues = accessor.enumValues();
-            } else if (accessor.enumValues) {
-              enumValues = accessor.enumValues;
-            } else if (typeof accessor.options === 'function') {
-              enumValues = accessor.options();
-            } else if (accessor.options) {
-              enumValues = accessor.options;
-            }
-            
-            if (enumValues && (Array.isArray(enumValues) || enumValues.length > 0)) {
-              // Convert to array if it's array-like
-              propData.enumValues = Array.isArray(enumValues) ? enumValues : Array.from(enumValues);
-              console.log(`✅ Stored enumValues:`, propData.enumValues);
-            } else {
-              console.warn(`⚠️ No enumValues found for enum: ${propKey}, will try to extract from accessor methods`);
-            }
-          }
-          
-          props[propKey] = propData;
-        }
-      }
-    }
-
-    // Get all view models and collect their properties
+    // Get all view models and collect their properties (including nested VMs)
     function GetAllViewModelProperties(rive) {
       const props = {};
-      const vmMetadata = {}; // Track VM name and parent property for each property
+      const vmMetadata = {};
       const vmi = rive.viewModelInstance;
       const defaultVM = rive.defaultViewModel();
+      const defaultVMName = defaultVM.name;
+      const processedVMs = new Set();
       
-      if (!defaultVM) {
-        console.error("No default view model");
-        return { props, vmMetadata, defaultVMName: "Main" };
-      }
-
-      const defaultVMName = typeof defaultVM.name === 'function' ? defaultVM.name() : defaultVM.name;
-
-      // collect properties from the default view model
-      collectProperties(vmi, defaultVM, props, "");
-      
-      const processedVMs = new Set([defaultVM]);
-      
-      // Iterate over properties to find nested view models
-      for (const prop of defaultVM.properties) {
-        if (prop?.type === "viewModel" && prop.name) {
-          let matchedVM = null;
+      // Recursively process a view model and its properties
+      function processViewModel(vm, pathPrefix = "") {
+        if (processedVMs.has(vm)) return;
+        processedVMs.add(vm);
+        
+        for (const property of vm.properties) {
+          const propertyPath = pathPrefix ? `${pathPrefix}/${property.name}` : property.name;
           
-          for (let i = 0; i < rive.viewModelCount; i++) {
-            const vm = rive.viewModelByIndex(i);
-            if (!vm || processedVMs.has(vm)) continue;
-            if (vm.name && prop.name.includes(vm.name)) {
-              matchedVM = vm;
-              break;
-            }
-          }
-          
-          if (!matchedVM) {
+          // Handle nested view models
+          if (property.type === "viewModel") {
+            let matchedVM = null;
             for (let i = 0; i < rive.viewModelCount; i++) {
-              const vm = rive.viewModelByIndex(i);
-              if (vm && !processedVMs.has(vm)) {
-                matchedVM = vm;
+              const nestedVM = rive.viewModelByIndex(i);
+              if (!nestedVM || processedVMs.has(nestedVM)) continue;
+              if (nestedVM.name && property.name.includes(nestedVM.name)) {
+                matchedVM = nestedVM;
                 break;
               }
             }
+            
+            if (matchedVM) {
+              vmMetadata[property.name] = { 
+                vmName: matchedVM.name, 
+                parentProp: property.name, 
+                parentVMName: vm.name 
+              };
+              processViewModel(matchedVM, property.name);
+            }
+            continue;
           }
-           
-          if (matchedVM) {
-            processedVMs.add(matchedVM);
-            const vmName = typeof matchedVM.name === 'function' ? matchedVM.name() : matchedVM.name;
-            // Store metadata for this nested VM's properties
-            vmMetadata[prop.name] = { vmName, parentProp: prop.name, parentVMName: defaultVMName };
-            // collect properties from a nested view model
-            collectProperties(vmi, matchedVM, props, prop.name);
+          
+          // Process primitive properties
+          console.log("Property found:" + property.name + " of type " + property.type);
+          
+          let accessor = null;
+          try {
+            switch(property.type) {
+              case "string":  accessor = vmi.string(propertyPath); break;
+              case "number":  accessor = vmi.number(propertyPath); break;
+              case "boolean": accessor = vmi.boolean(propertyPath); break;
+              case "trigger": accessor = vmi.trigger(propertyPath); break;
+              case "color":   accessor = vmi.color(propertyPath); break;
+              case "image": accessor = vmi.image(propertyPath); break;
+              case "enumType": accessor = vmi.enum(propertyPath); break;
+            }
+          } catch (err) {
+            console.error("Error mapping: "+ propertyPath + " " + err.message);
+          }
+
+          if (accessor) {
+            const propKey = propertyPath.replace(/\//g, '_');
+            const propData = { type: property.type, accessor, path: propertyPath };
+            
+            if (property.type === 'enumType' && accessor.values) {
+              propData.enumValues = accessor.values;
+            }
+            
+            props[propKey] = propData;
           }
         }
       }
+      
+      processViewModel(defaultVM);
       
       return { props, vmMetadata, defaultVMName };
     }
     
-    // Initialize Singular Widget first (wait for initial values to decide runtime)
+    
+    // Initialize Singular Widget
     SingularWidget.init({
-      onInit: (json) => {
+      onInit: async (json) => {
         window.pendingInitialValues = json;
-        // Fallback: if onValue doesn't arrive soon, apply onInit values
-        setTimeout(async () => {
-          if (HAS_INITIAL_VALUES || INIT_DONE) return;
-          try {
-            const useWebGL2 = parseBool(json.rive_renderer, true); // treat undefined as true
-            const desiredRuntime = useWebGL2 ? 'webgl2' : 'canvas';
-            await ensureRiveRuntime(desiredRuntime);
-            if (typeof json.rive_file_url === 'string' && json.rive_file_url.endsWith('.riv')) {
-              CURRENT_FILE_URL = json.rive_file_url;
-              INIT_DONE = true;
-              initializeRive(json.rive_file_url);
-            }
-          } catch (e) {
-            console.error('❌ onInit fallback failed:', e);
+        
+        if (json.rive_layout !== undefined) {
+          LAYOUT_FIT = LAYOUT_OPTIONS[parseInt(json.rive_layout)] || "Contain";
+        }
+        
+        const desiredRuntime = json.rive_renderer ? 'webgl2' : 'canvas';
+        await toggleRiveRuntime(desiredRuntime);
+          
+          if (json.rive_file_url?.endsWith('.riv')) {
+            CURRENT_FILE_URL = json.rive_file_url;
+            initializeRive(json.rive_file_url);
           }
-        }, 500);
       },
       onValue: onSingularValue,
       onButtonClicked: onSingularButtonClicked,
@@ -286,15 +177,13 @@
         autoplay: true,
         autoBind: true,
         ...(CURRENT_RUNTIME === 'webgl2' ? { useOffscreenRenderer: USE_OFFSCREEN_RENDERER } : {}),
-        // apply current layout fit on initial load as well
-        layout: (window.rive && rive && rive.Layout) ? new rive.Layout({
-          fit: rive.Fit[LAYOUT_FIT.charAt(0).toUpperCase() + LAYOUT_FIT.slice(1)] || rive.Fit.Contain
-        }) : undefined,
+        layout: new rive.Layout({ fit: rive.Fit[LAYOUT_FIT] }),
+        
         onLoad: () => {
           resizeCanvas();
           
           // Try to find a Rive state machine
-          if (r.stateMachineNames && r.stateMachineNames.length > 0) {
+          if (r.stateMachineNames.length > 0) {
             STATE_MACHINE_NAME = r.stateMachineNames[0];
           } else {
             console.warn("⚠️ No Rive state machines found in this file");
@@ -302,7 +191,7 @@
           }
           
           if (r.viewModelCount === 0) {
-            console.log("⚠️ No Rive view models found in Rive file");
+            console.warn("⚠️ No Rive view models found in Rive file");
             // Still generate UI even without Rive view models (a.k.a only artboard selection)
             generateUIModel();
             return;
@@ -331,13 +220,11 @@
         riveConfig.artboard = ARTBOARD_NAME;
       }
 
-      // Only add Rive stateMachines if we know the name
       if (STATE_MACHINE_NAME) {
         riveConfig.stateMachines = STATE_MACHINE_NAME;
       }
       
       r = new rive.Rive(riveConfig);
-      INIT_DONE = true;
     }
 
     // Generate Dynamic UI model for Singular Widget
@@ -362,7 +249,7 @@
         for (let i = 0; i < artboardCount; i++) {
           const artboard = file.artboardByIndex(i);
           if (artboard) {
-            const artboardName = getArtboardName(artboard);
+            const artboardName = typeof artboard.name === 'function' ? artboard.name() : artboard.name;
             availableArtboards.push(artboardName);
             
             // Check if this is the current artboard
@@ -625,12 +512,9 @@
 
       // Check for runtime change first and ensure it's loaded
       if (json.rive_renderer !== undefined) {
-        const desiredRenderer = parseBool(json.rive_renderer, true);
+        const desiredRenderer = json.rive_renderer !== false;
         const desiredRuntime = desiredRenderer ? 'webgl2' : 'canvas';
         
-        if (!HAS_INITIAL_VALUES) {
-          HAS_INITIAL_VALUES = true;
-        }
         
         const runtimeChanged = (CURRENT_RUNTIME && CURRENT_RUNTIME !== desiredRuntime);
         const needRuntimeLoad = !CURRENT_RUNTIME || runtimeChanged || !(window.rive && typeof window.rive.Rive === 'function');
@@ -646,7 +530,7 @@
             r = null;
           }
           try {
-            await ensureRiveRuntime(desiredRuntime);
+            await toggleRiveRuntime(desiredRuntime);
           } catch (e) {
             console.error('❌ Failed to load desired runtime:', desiredRuntime, e);
             return;
@@ -665,8 +549,7 @@
             // Get layout if available
             let layoutFit = LAYOUT_FIT;
             if (json.rive_layout !== undefined) {
-              const layoutOptions = ["contain", "cover", "fill", "fitWidth", "fitHeight", "scaleDown", "layout", "none"];
-              layoutFit = layoutOptions[parseInt(json.rive_layout)] || "contain";
+              layoutFit = LAYOUT_OPTIONS[parseInt(json.rive_layout)] || "Contain";
               LAYOUT_FIT = layoutFit;
             }
             
@@ -695,8 +578,7 @@
       
       // Handle layout change
       if (json.rive_layout !== undefined) {
-        const layoutOptions = ["contain", "cover", "fill", "fitWidth", "fitHeight", "scaleDown", "layout", "none"];
-        const newLayout = layoutOptions[parseInt(json.rive_layout)] || "contain";
+        const newLayout = LAYOUT_OPTIONS[parseInt(json.rive_layout)] || "Contain";
         if (newLayout !== LAYOUT_FIT) {
           LAYOUT_FIT = newLayout;
           if (r && CURRENT_FILE_URL) {
@@ -713,7 +595,7 @@
         if (file && artboardIndex >= 0 && artboardIndex < file.artboardCount()) {
           const artboard = file.artboardByIndex(artboardIndex);
           if (artboard) {
-            const newArtboard = getArtboardName(artboard);
+            const newArtboard = typeof artboard.name === 'function' ? artboard.name() : artboard.name;
             if (newArtboard !== ARTBOARD_NAME) {
               console.log('🎨 [onSingularValue] Artboard changed to:', newArtboard);
               ARTBOARD_NAME = newArtboard;
@@ -905,9 +787,7 @@
         autoplay: true,
         autoBind: true,
         ...(CURRENT_RUNTIME === 'webgl2' ? { useOffscreenRenderer: USE_OFFSCREEN_RENDERER } : {}),
-        layout: new rive.Layout({
-          fit: rive.Fit[layoutFit.charAt(0).toUpperCase() + layoutFit.slice(1)] || rive.Fit.Contain
-        }),
+        layout: new rive.Layout({ fit: rive.Fit[layoutFit] }),
         onLoad: () => {
           console.log('🔄 [reloadRive] Rive loaded successfully');
           resizeCanvas();

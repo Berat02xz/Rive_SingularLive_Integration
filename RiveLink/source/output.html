@@ -461,14 +461,6 @@
           console.log(`Sending UI Model to Singular:`, JSON.stringify(uiModel, null, 2),);
           const res = SingularWidget.setCustomWidgetUI(uiModel);
           console.log(`Singular UI response:`, res);
-
-          if (res && res.success === false) {
-            console.error(
-              "❌ Failed to set dynamic UI:",
-              res.message || res.error || "Unknown error",
-            );
-          }
-        
       }
 
       // Handle singular value change
@@ -572,10 +564,6 @@
                   ? artboard.name()
                   : artboard.name;
               if (newArtboard !== widgetState.artboardName) {
-                console.log(
-                  "🎨 [onSingularValue] Artboard changed to:",
-                  newArtboard,
-                );
                 widgetState.artboardName = newArtboard;
 
                 // Reset state machine when artboard changes
@@ -611,10 +599,6 @@
 
             // Only reload if the state machine actually changed
             if (newStateMachineName !== widgetState.stateMachineName) {
-              console.log(
-                "⚙️ [onSingularValue] State machine changed to:",
-                newStateMachineName,
-              );
               widgetState.stateMachineName = newStateMachineName;
               if (widgetState.fileUrl) {
                 reloadRive(widgetState.fileUrl);
@@ -626,7 +610,6 @@
 
         // Don't process dynamic field updates if we don't have a valid Rive file loaded
         if (!widgetState.r) {
-          console.log("⚠️ No Rive instance loaded");
           return;
         }
 
@@ -636,35 +619,17 @@
           if (json[alphanumericId] === undefined) continue;
 
           try {
-            if (
-              prop.type === "string" ||
-              prop.type === "number" ||
-              prop.type === "boolean"
-            ) {
+            if (prop.type === "string" || prop.type === "number" || prop.type === "boolean") {
               const newValue = json[alphanumericId];
               if (newValue !== prop.accessor.value) {
                 prop.accessor.value = newValue;
               }
-            } else if (prop.type === "image") {
-              // Handle image property updates - set from URL or data
-              const imageValue = json[alphanumericId];
+            } 
+             
+            if (prop.type === "image") {
+              let imageUrl = json[alphanumericId];
 
-              // If empty, skip update to keep Rive's default/placeholder image
-              if (!imageValue || imageValue === "") {
-                continue;
-              }
-
-              // Singular image fields can send data in different formats
-              let imageUrl = null;
-
-              // Check if it's an object with url or data property
-              if (typeof imageValue === "object") {
-                imageUrl = imageValue.url || imageValue.data || imageValue.src;
-              } else if (typeof imageValue === "string") {
-                imageUrl = imageValue;
-              }
-
-              if (!imageUrl) {
+              if (!imageUrl || imageUrl === "") {
                 continue;
               }
 
@@ -691,18 +656,7 @@
               (async () => {
                 try {
                   const res = await fetch(imageUrl);
-
-                  if (!res.ok) {
-                    throw new Error(`HTTP error! status: ${res.status}`);
-                  }
-
                   const { decodeImage } = window.rive;
-
-                  if (!decodeImage || typeof decodeImage !== "function") {
-                    console.error(`❌ decodeImage function not found`);
-                    return;
-                  }
-
                   const image = await decodeImage(
                     new Uint8Array(await res.arrayBuffer()),
                   );
@@ -711,32 +665,25 @@
                   console.error(`❌ Failed to load image ${name}:`, error);
                 }
               })();
-            } else if (prop.type === "enumType") {
+
+            }
+            
+            if (prop.type === "enumType") {
               // Handle enum selection updates - need to pass the enum value name, not the index
               const selectedIndex = parseInt(json[alphanumericId]);
 
-              if (
-                !isNaN(selectedIndex) &&
-                prop.enumValues &&
-                prop.enumValues[selectedIndex]
-              ) {
+              if (prop.enumValues[selectedIndex]) {
                 const enumValueName = prop.enumValues[selectedIndex];
                 const currentValue = prop.accessor.value;
 
                 // Only update if the value has actually changed
                 if (currentValue !== enumValueName) {
-                  console.log(
-                    `🔄 Updating enum ${name}: "${currentValue}" → "${enumValueName}"`,
-                  );
                   prop.accessor.value = enumValueName;
-                  console.log(`✅ Enum updated successfully`);
                 }
-              } else {
-                console.warn(
-                  `⚠️ Invalid enum index ${selectedIndex} or no enumValues for ${name}`,
-                );
               }
-            } else if (prop.type === "color") {
+            } 
+            
+            if (prop.type === "color") {
               const colorData = json[alphanumericId];
               let r, g, b, a;
 
@@ -768,10 +715,7 @@
               }
             }
           } catch (err) {
-            console.error(
-              `❌ Failed to update '${name}' (id: ${alphanumericId}):`,
-              err.message,
-            );
+            console.error(`❌ Failed to update '${name}' (id: ${alphanumericId}):`,err.message,);
           }
         }
       }

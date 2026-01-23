@@ -177,16 +177,17 @@
         onInit: async (json) => {
           window.pendingInitialValues = json;
 
-          widgetState.layoutFit = widgetState.layoutOptions[layoutIndex] || "Contain";
+          const layoutIndex = parseInt(json.rive_layout, 10);
+
+          widgetState.layoutFit = widgetState.layoutOptions?.[layoutIndex] || widgetState.layoutFit || "Contain";
 
           const desiredRuntime = json.rive_renderer ? "webgl2" : "canvas";
           await toggleRiveRuntime(desiredRuntime);
 
-          if (json.rive_file_url.endsWith(".riv")) {
+          if ( typeof json.rive_file_url === "string" && json.rive_file_url.endsWith(".riv")) {
             widgetState.fileUrl = json.rive_file_url;
             initializeRive(json.rive_file_url);
           }
-
         },
         onValue: onSingularValue,
         onButtonClicked: onSingularButtonClicked,
@@ -206,10 +207,6 @@
           onLoad: () => {
             resizeCanvas();
 
-            //initilize state machine to be first one
-            widgetState.stateMachineName = widgetState.r.stateMachineNames?.[0];
-            widgetState.stateMachineIndex = 0;
-
             const vmData = GetAllViewModelProperties(widgetState.r);
             widgetState.riveProps = vmData.props;
             window.vmMetadata = vmData.vmMetadata;
@@ -225,7 +222,7 @@
             }
           },
           onLoadError: (err) => {
-            console.error("❌ Rive load error:", err);
+            console.error("[Rive Error] Rive load error:", err);
           },
         };
         
@@ -234,17 +231,26 @@
 
         widgetState.r = new rive.Rive(riveConfig);
       }
+      
+      // Generate alphanumeric ID from a string
+      function toAlphanumericId(str) {
+        return str.replace(/[^a-zA-Z0-9]/g, "");
+      }
+
+      // Convert Rive ARGB integer to Singular RGBA object
+      function riveColorValueToRGBA(colorValue) {
+        return {
+          r: (colorValue >> 16) & 0xff,
+          g: (colorValue >> 8) & 0xff,
+          b: colorValue & 0xff,
+          a: ((colorValue >> 24) & 0xff) / 255,
+        };
+      }
 
       // Generate Dynamic UI model for Singular Widget
-      function generateUIModel() {
-        console.log(`UI Model Generated::`,Object.keys(widgetState.riveProps).length,"properties",);
+      function generateUIModel() {        
         const fields = [];
         const groupedProperties = {};
-
-        // Generate alphanumeric ID from a string
-        function toAlphanumericId(str) {
-          return str.replace(/[^a-zA-Z0-9]/g, "");
-        }
 
         // Get available artboards from the Rive file
         const availableArtboards = [];
@@ -256,19 +262,13 @@
           for (let i = 0; i < artboardCount; i++) {
             const artboard = file.artboardByIndex(i);
             if (artboard) {
-              const artboardName =
-                typeof artboard.name === "function"
-                  ? artboard.name()
-                  : artboard.name;
+              const artboardName = artboard.name;
               availableArtboards.push(artboardName);
 
               // Check if this is the current artboard
-              if (
-                widgetState.artboardName &&
-                artboardName === widgetState.artboardName
-              ) {
+              if (artboardName === widgetState.artboardName) {
                 currentArtboardIndex = i;
-              } else if (!widgetState.artboardName && i === 0) {
+              } else {
                 // If no artboard is set, default to the first one
                 currentArtboardIndex = 0;
               }
@@ -291,11 +291,7 @@
         }
 
         // Add state machine selection field
-        if (
-          widgetState.r &&
-          widgetState.r.stateMachineNames &&
-          widgetState.r.stateMachineNames.length > 0
-        ) {
+        if (widgetState.r.stateMachineNames.length > 0) {
           const stateMachineOptions = widgetState.r.stateMachineNames;
           const currentStateMachineIndex = widgetState.stateMachineIndex || 0;
 
@@ -357,70 +353,24 @@
           let defaultValue = "";
           let selections = undefined;
 
-          if (prop.type === "trigger") {
-            fieldType = "button";
-          } else if (prop.type === "string") {
-            fieldType = "text";
-            defaultValue = prop.accessor.value || "";
-          } else if (prop.type === "number") {
-            defaultValue = prop.accessor.value || 0;
-          } else if (prop.type === "boolean") {
-            fieldType = "checkbox";
-            defaultValue = prop.accessor.value || false;
-          } else if (prop.type === "image") {
-            // Map image properties to image fields (for URL or file upload)
-            fieldType = "image";
-            // Get the current image asset URL from Rive as default
-            try {
-              const imageValue = prop.accessor.value;
-              // Try different ways to get the image URL
-              if (imageValue) {
-                if (imageValue.cdnUrl) {
-                  defaultValue = imageValue.cdnUrl;
-                } else if (imageValue._nativeImage?.cdnUrl) {
-                  defaultValue = imageValue._nativeImage.cdnUrl;
-                } else if (imageValue.nativeImage?.cdnUrl) {
-                  defaultValue = imageValue.nativeImage.cdnUrl;
-                } else {
-                  defaultValue = "";
-                }
-              } else {
-                defaultValue = "";
+          switch (prop.type) {
+            case "trigger": fieldType = "button"; break;
+            case "string": fieldType = "text"; defaultValue = prop.accessor.value ?? ""; break;
+            case "number": fieldType = "number"; defaultValue = prop.accessor.value ?? 0; break;
+            case "boolean": fieldType = "checkbox"; defaultValue = prop.accessor.value ?? false; break;
+            case "image": fieldType = "image"; defaultValue = ""; break;
+            case "color": defaultValue = riveColorValueToRGBA(prop.accessor.value); break;
+            case "enumType": { fieldType = "selection"; defaultValue = (prop.accessor.value ?? 0).toString();
+              // Build selections from enumValues
+              if (prop.enumValues?.length) {
+                selections = prop.enumValues.map((v, i) => ({
+                  id: i.toString(),
+                  title: v,
+                }));
               }
-            } catch (err) {
-              defaultValue = "";
+              break;
             }
-          } else if (prop.type === "color") {
-            const colorValue = prop.accessor.value;
-            defaultValue = {
-              r: (colorValue >> 16) & 0xff,
-              g: (colorValue >> 8) & 0xff,
-              b: colorValue & 0xff,
-              a: ((colorValue >> 24) & 0xff) / 255,
-            };
-          } else if (prop.type === "enumType") {
-            // Convert enum to selection widget
-            console.log(`🎯 Converting ENUM to selection widget: ${name}`);
-            console.log(`🎯 Prop data:`, prop);
-            fieldType = "selection";
-            const currentValue = prop.accessor.value || 0;
-            defaultValue = currentValue.toString();
-            console.log(`🎯 Current enum value: ${currentValue}`);
-
-            // Create selections array from enum values
-            if (prop.enumValues && prop.enumValues.length > 0) {
-              selections = prop.enumValues.map((enumVal, index) => ({
-                id: index.toString(),
-                title: enumVal,
-              }));
-              console.log(`✅ Created selections array:`, selections);
-            } else {
-              // Fallback if enumValues not available
-              console.warn(
-                `⚠️ No enumValues available, using fallback for: ${name}`,
-              );
-              selections = [{ id: "0", title: "Option 0" }];
-            }
+            default: console.warn(`⚠️ Unknown property type: ${prop.type} for ${name}`);
           }
 
           // Use alphanumeric ID for dynamic fields
@@ -436,7 +386,6 @@
           // Add selections array for enum/selection fields
           if (selections) {
             field.selections = selections;
-            console.log(`✅ Added selection field:`, field);
           }
 
           fields.push(field);
@@ -454,11 +403,7 @@
           const childIds = ["riveartboard"];
 
           // Add state machine field to the group if it exists
-          if (
-            widgetState.r &&
-            widgetState.r.stateMachineNames &&
-            widgetState.r.stateMachineNames.length > 0
-          ) {
+          if ( widgetState.r.stateMachineNames.length > 0) {
             childIds.push("rivestatemachineselect");
           }
 
@@ -509,17 +454,13 @@
         }
 
         // Set dynamic UI using SingularWidget.setCustomWidgetUI
-        if (typeof SingularWidget.setCustomWidgetUI === "function") {
-          const uiModel = {
+        const uiModel = {
             fields: fields,
             groups: groups,
           };
-          console.log(
-            `📤 Sending UI Model to Singular:`,
-            JSON.stringify(uiModel, null, 2),
-          );
+          console.log(`Sending UI Model to Singular:`, JSON.stringify(uiModel, null, 2),);
           const res = SingularWidget.setCustomWidgetUI(uiModel);
-          console.log(`📥 Singular UI response:`, res);
+          console.log(`Singular UI response:`, res);
 
           if (res && res.success === false) {
             console.error(
@@ -527,55 +468,27 @@
               res.message || res.error || "Unknown error",
             );
           }
-        } else {
-          console.error(
-            "❌ SingularWidget.setCustomWidgetUI is not available. Please update the Singular Widget SDK to the latest version.",
-          );
-        }
-      }
-
-      // Generate alphanumeric ID from a string (utility function)
-      function toAlphanumericId(str) {
-        return str.replace(/[^a-zA-Z0-9]/g, "");
+        
       }
 
       // Handle singular value change
-      // if a value such as artboard or layout changes, then it reloads Rive (required)
+      // If a value such as Artboard/State Machine/File url/Renderer/Layout changes, reload the rive instance
       async function onSingularValue(json) {
-        window.pendingInitialValues = window.pendingInitialValues
-          ? { ...window.pendingInitialValues, ...json }
-          : json;
-
+        window.pendingInitialValues = window.pendingInitialValues ? { ...window.pendingInitialValues, ...json }: json;
+        
         // Check for runtime change first and ensure it's loaded
         if (json.rive_renderer !== undefined) {
           const desiredRenderer = json.rive_renderer !== false;
           const desiredRuntime = desiredRenderer ? "webgl2" : "canvas";
 
-          const runtimeChanged =
-            widgetState.runtime && widgetState.runtime !== desiredRuntime;
-          const needRuntimeLoad =
-            !widgetState.runtime ||
-            runtimeChanged ||
-            !(window.rive && typeof window.rive.Rive === "function");
+          const runtimeChanged = widgetState.runtime && widgetState.runtime !== desiredRuntime;
+          const needRuntimeLoad = !widgetState.runtime || runtimeChanged || !(window.rive);
 
           if (needRuntimeLoad) {
-            // If switching runtime and an instance exists, cleanup before removing global
-            if (runtimeChanged && widgetState.r) {
-              try {
-                widgetState.r.cleanup();
-              } catch (e) {
-                console.warn("⚠️ Cleanup error before runtime switch:", e);
-              }
-              widgetState.r = null;
-            }
             try {
               await toggleRiveRuntime(desiredRuntime);
             } catch (e) {
-              console.error(
-                "❌ Failed to load desired runtime:",
-                desiredRuntime,
-                e,
-              );
+              console.error("❌ Failed to load desired runtime:", desiredRuntime ,e , );
               return;
             }
           }
@@ -610,7 +523,7 @@
               if (!widgetState.r) {
                 initializeRive(newFileUrl);
               } else {
-                reloadRive(newFileUrl, widgetState.artboardName, layoutFit);
+                reloadRive(newFileUrl);
               }
               return;
             }
@@ -637,11 +550,7 @@
           if (newLayout !== widgetState.layoutFit) {
             widgetState.layoutFit = newLayout;
             if (widgetState.r && widgetState.fileUrl) {
-              reloadRive(
-                widgetState.fileUrl,
-                widgetState.artboardName,
-                newLayout,
-              );
+              reloadRive(widgetState.fileUrl);
               return;
             }
           }
@@ -674,11 +583,7 @@
                 widgetState.stateMachineIndex = 0;
 
                 if (widgetState.fileUrl) {
-                  reloadRive(
-                    widgetState.fileUrl,
-                    widgetState.artboardName,
-                    widgetState.layoutFit,
-                  );
+                  reloadRive(widgetState.fileUrl);
                   return;
                 }
               }
@@ -712,11 +617,7 @@
               );
               widgetState.stateMachineName = newStateMachineName;
               if (widgetState.fileUrl) {
-                reloadRive(
-                  widgetState.fileUrl,
-                  widgetState.artboardName,
-                  widgetState.layoutFit,
-                );
+                reloadRive(widgetState.fileUrl);
                 return;
               }
             }
@@ -875,87 +776,30 @@
         }
       }
 
-      function reloadRive(fileUrl, artboardName, layoutFit) {
-        console.log("🔄 [reloadRive] Cleaning up and reloading...");
-        console.log("   - fileUrl:", fileUrl);
-        console.log("   - artboardName:", artboardName || "(default)");
-        console.log(
-          "   - stateMachineName:",
-          widgetState.stateMachineName || "(auto-detect)",
-        );
-        console.log("   - layoutFit:", layoutFit);
-
+      // Reload Rive instance with new parameters
+      // Cleans up existing instance before re-initializing
+      function reloadRive(fileUrl) {
+        console.log("[reloadRive] Cleaning up and reloading...");
+        
         if (widgetState.r) {
           try {
             widgetState.r.cleanup();
-            console.log("🔄 [reloadRive] Cleanup successful");
+            console.log("[reloadRive] Cleanup successful");
           } catch (err) {
-            console.warn("⚠️ Error cleaning up Rive:", err);
+            console.warn("[reloadRive] Error cleaning up Rive:", err);
           }
           widgetState.r = null;
         }
 
-        const riveConfig = {
-          src: fileUrl,
-          canvas: document.getElementById("canvas"),
-          autoplay: true,
-          autoBind: true,
-          ...(widgetState.runtime === "webgl2"
-            ? { useOffscreenRenderer: true }
-            : {}),
-          layout: new rive.Layout({ fit: rive.Fit[layoutFit] }),
-          onLoad: () => {
-            console.log("🔄 [reloadRive] Rive loaded successfully");
-            resizeCanvas();
-
-            if (widgetState.r.viewModelCount === 0) {
-              console.log("⚠️ No view models found in reloaded Rive file");
-              // Still generate UI even without view models
-              return;
-            }
-
-            const vmData = GetAllViewModelProperties(widgetState.r);
-            widgetState.riveProps = vmData.props;
-            window.vmMetadata = vmData.vmMetadata;
-            window.defaultVMName = vmData.defaultVMName;
-            generateUIModel();
-            ensureFPSCounter(widgetState.r);
-
-            if (window.pendingInitialValues) {
-              const initialValues = window.pendingInitialValues;
-              window.pendingInitialValues = null;
-              onSingularValue(initialValues);
-            }
-          },
-          onLoadError: (err) => {
-            console.error("❌ Rive reload error:", err);
-            // Still try to generate basic UI
-            generateUIModel();
-          },
-        };
-
-        if (artboardName) {
-          riveConfig.artboard = artboardName;
-        }
-
-        // Only add stateMachines if we know the name
-        if (widgetState.stateMachineName) {
-          riveConfig.stateMachines = widgetState.stateMachineName;
-        }
-
-        widgetState.r = new rive.Rive(riveConfig);
+        initializeRive(fileUrl);
       }
 
       // Handle button clicks from Singular Widget
+      // Cycle through all rive properties to find matching trigger and trigger it
       function onSingularButtonClicked(action) {
-        // Map alphanumeric ID back to property name
         for (const [name, prop] of Object.entries(widgetState.riveProps)) {
           const alphanumericId = toAlphanumericId(name);
-          if (
-            alphanumericId === action &&
-            prop?.type === "trigger" &&
-            typeof prop.accessor.trigger === "function"
-          ) {
+          if (alphanumericId === action && prop?.type === "trigger") {
             prop.accessor.trigger();
             return;
           }

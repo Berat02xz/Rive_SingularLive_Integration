@@ -376,7 +376,7 @@
               }
               break;
             }
-            default: console.warn(`⚠️ Unknown property type: ${prop.type} for ${name}`);
+            default: console.warn(`Unknown property type: ${prop.type} for ${name}`);
           }
 
           // Use alphanumeric ID for dynamic fields
@@ -486,7 +486,7 @@
             try {
               await toggleRiveRuntime(desiredRuntime);
             } catch (e) {
-              console.error("❌ Failed to load desired runtime:", desiredRuntime ,e , );
+              console.error("Failed to load desired runtime:", desiredRuntime ,e , );
               return;
             }
           }
@@ -676,7 +676,7 @@
                   );
                   prop.accessor.value = image;
                 } catch (error) {
-                  console.error(`❌ Failed to load image ${name}:`, error);
+                  console.error(`Failed to load image ${name}:`, error);
                 }
               })();
 
@@ -725,11 +725,11 @@
                     : 255;
                 prop.accessor.rgba(r, g, b, a);
               } else {
-                console.warn(`⚠️ Unknown color format for ${name}:`, colorData);
+                console.warn(`Unknown color format for ${name}:`, colorData);
               }
             }
           } catch (err) {
-            console.error(`❌ Failed to update '${name}' (id: ${alphanumericId}):`,err.message,);
+            console.error(`Failed to update '${name}' (id: ${alphanumericId}):`,err.message,);
           }
         }
       }

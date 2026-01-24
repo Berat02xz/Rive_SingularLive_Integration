@@ -35,7 +35,7 @@
         fileUrl: "",
         runtime: "",
         stateMachineIndex: 0,
-        displayFpsCounter: true, // Set false to hide FPS counter (for production)
+        displayFpsCounter: false,
         layoutOptions: [ "Contain", "Cover", "Fill", "FitWidth", "FitHeight", "ScaleDown", "Layout", "None", ],
         runtimeSources: {
           webgl2: "https://unpkg.com/@rive-app/webgl2",
@@ -81,15 +81,17 @@
       
       // Displays FPS counter overlay (only if displayFpsCounter is true)
       function ensureFPSCounter(instance) {
-        if(widgetState.displayFpsCounter){
-          const overlay = document.getElementById("rive-fps-counter");
+        const overlay = document.getElementById("rive-fps-counter");
+        if (widgetState.displayFpsCounter) {
           overlay.style.display = "block";
-          
+
           instance.enableFPSCounter((fps) => {
-          if (widgetState.displayFpsCounter) {
-            overlay.textContent = `FPS: ${Math.round(fps)}`;
-          }
-        });
+            if (widgetState.displayFpsCounter) {
+              overlay.textContent = `FPS: ${Math.round(fps)}`;
+            }
+          });
+        } else {
+          overlay.style.display = "none";
         }
       }
 
@@ -180,6 +182,10 @@
           const layoutIndex = parseInt(json.rive_layout, 10);
 
           widgetState.layoutFit = widgetState.layoutOptions?.[layoutIndex] || widgetState.layoutFit || "Contain";
+
+          if (json.show_fps !== undefined) {
+            widgetState.displayFpsCounter = json.show_fps;
+          }
 
           const desiredRuntime = json.rive_renderer ? "webgl2" : "canvas";
           await toggleRiveRuntime(desiredRuntime);
@@ -532,6 +538,14 @@
         ) {
           initializeRive(widgetState.fileUrl);
           return;
+        }
+
+        // Handle show FPS change
+        if (json.show_fps !== undefined) {
+          widgetState.displayFpsCounter = json.show_fps === true;
+          if (widgetState.r) {
+            ensureFPSCounter(widgetState.r);
+          }
         }
 
         // Handle layout change

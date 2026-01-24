@@ -29,6 +29,12 @@
         "type": "checkbox",
         "title": "Rive Renderer",
         "defaultValue": true
+      },
+      {
+        "id": "show_fps",
+        "type": "checkbox",
+        "title": "Show FPS",
+        "defaultValue": false
       }
     ],
     "groups": [

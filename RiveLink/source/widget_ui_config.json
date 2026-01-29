@@ -44,7 +44,7 @@
         "width": "double",
         "toolTip": "Configure Rive file source, renderer, and layout",
         "activeId": "",
-        "childIds": ["rive_file_url",  "rive_layout","rive_renderer"]
+        "childIds": ["rive_file_url",  "rive_layout","rive_renderer", "show_fps"]
       }
     ]
   }

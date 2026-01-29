@@ -43,6 +43,22 @@
         },
       };
 
+      // Wait for Rive global to be available after script load
+      function waitForRiveGlobal() {
+        return new Promise((resolve, reject) => {
+          const start = Date.now();
+          const timer = setInterval(() => {
+            if (window.rive && typeof window.rive.Rive === 'function') {
+              clearInterval(timer);
+              resolve();
+            } else if (Date.now() - start > 200) {
+              clearInterval(timer);
+              reject(new Error('Timed out waiting for Rive global'));
+            }
+          }, 200);
+        });
+      }
+
       // Toggles WebGL2 or Canvas runtime
       // if the desired runtime is different from the current, it unloads the existing runtime from <script> and loads the new one
       async function toggleRiveRuntime(desiredRuntime) {
@@ -61,12 +77,18 @@
         document.body.prepend(script);
 
         await new Promise((resolve, reject) => {
-          script.onload = resolve;
+          script.onload = async () => {
+            try {
+              await waitForRiveGlobal();
+              widgetState.runtime = desiredRuntime;
+              resolve();
+            } catch (e) {
+              reject(e);
+            }
+          };
           script.onerror = () =>
             reject(new Error(`Failed to load ${desiredRuntime}`));
         });
-
-        widgetState.runtime = desiredRuntime;
       }
 
       // Resize canvas to fit window

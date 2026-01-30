@@ -169,6 +169,7 @@
                 case "color": accessor = vmi.color(propertyPath); break;
                 case "image": accessor = vmi.image(propertyPath); break;
                 case "enumType": accessor = vmi.enum(propertyPath); break;
+                case "artboard": accessor = vmi.artboard(propertyPath); break;
               }
             } catch (err) {
               console.error("Error mapping: " + propertyPath + " " + err.message,);
@@ -184,6 +185,10 @@
 
               if (property.type === "enumType" && accessor.values) {
                 propData.enumValues = accessor.values;
+              }
+
+              if (property.type === "artboard") {
+                propData.artboardNames = [];
               }
 
               props[propKey] = propData;
@@ -286,6 +291,10 @@
         let currentArtboardIndex = 0;
 
         if (file) {
+          // Get the default (active) artboard from Rive
+          const defaultArtboard = file.defaultArtboard();
+          const defaultArtboardName = defaultArtboard ? defaultArtboard.name : null;
+
           const artboardCount = file.artboardCount();
           for (let i = 0; i < artboardCount; i++) {
             const artboard = file.artboardByIndex(i);
@@ -296,9 +305,8 @@
               // Check if this is the current artboard
               if (artboardName === widgetState.artboardName) {
                 currentArtboardIndex = i;
-              } else {
-                // If no artboard is set, default to the first one
-                currentArtboardIndex = 0;
+              } else if (!widgetState.artboardName && artboardName === defaultArtboardName) {
+                currentArtboardIndex = i;
               }
             }
           }
@@ -395,6 +403,31 @@
                   id: i.toString(),
                   title: v,
                 }));
+              }
+              break;
+            }
+            case "artboard": {
+              fieldType = "selection";
+              const currentArtboardName = prop.accessor.value;
+              let selectedId = "0";
+              // Build selections from available artboards, excluding the current displayed artboard
+              if (availableArtboards.length > 0) {
+                const filteredWithIndices = availableArtboards
+                  .map((artboardName, originalIndex) => ({ artboardName, originalIndex }))
+                  .filter(item => item.artboardName !== widgetState.artboardName);
+                
+                if (filteredWithIndices.length > 0) {
+                  selections = filteredWithIndices.map((item) => {
+                    if (item.artboardName === currentArtboardName) {
+                      selectedId = item.originalIndex.toString();
+                    }
+                    return {
+                      id: item.originalIndex.toString(),
+                      title: item.artboardName,
+                    };
+                  });
+                  defaultValue = selectedId;
+                }
               }
               break;
             }
@@ -715,6 +748,35 @@
                 // Only update if the value has actually changed
                 if (currentValue !== enumValueName) {
                   prop.accessor.value = enumValueName;
+                }
+              }
+            }
+
+            if (prop.type === "artboard") {
+              const selectedIndex = parseInt(json[alphanumericId]);
+              const file = widgetState.r?.file;
+
+              if (file && selectedIndex >= 0 && selectedIndex < file.artboardCount()) {
+                const artboardObj = file.artboardByIndex(selectedIndex);
+                if (artboardObj && widgetState.fileUrl) {
+                  const artboardName = artboardObj.name;
+                  
+                  // Create a RiveFile instance from the URL to get the proper artboard (a workaround for Rive runtime limitations)
+                  // Update this when Rive docs support changing artboards directly
+                  const riveFile = new rive.RiveFile({
+                    src: widgetState.fileUrl,
+                    onLoad: () => {
+                      try {
+                        const artboard = riveFile.getArtboard(artboardName);
+                        if (artboard) {
+                          prop.accessor.value = artboard;
+                        }
+                      } catch (err) {
+                        console.error(`Failed to get artboard ${artboardName}:`, err);
+                      }
+                    }
+                  });
+                  riveFile.init();
                 }
               }
             } 

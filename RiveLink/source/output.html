@@ -15,6 +15,10 @@
         display: block;
         width: 100%;
         height: 100%;
+        opacity: 0;
+      }
+      #canvas.ready {
+        opacity: 1;
       }
     </style>
   </head>
@@ -249,10 +253,15 @@
             
             // Apply pending initial values and clear them
             if (window.pendingInitialValues) {
-            const initialValues = window.pendingInitialValues;
-            window.pendingInitialValues = null;
-            onSingularValue(initialValues);
+              const initialValues = window.pendingInitialValues;
+              window.pendingInitialValues = null;
+              onSingularValue(initialValues);
             }
+            
+            // Show canvas after 0.4 second delay to ensure values are applied
+            setTimeout(() => {
+              document.getElementById("canvas").classList.add("ready");
+            }, 200);
           },
           onLoadError: (err) => {
             console.error("[Rive Error] Rive load error:", err);
@@ -822,6 +831,9 @@
       // Cleans up existing instance before re-initializing
       function reloadRive(fileUrl) {
         console.log("[reloadRive] Cleaning up and reloading...");
+        
+        // Hide canvas immediately when reloading
+        document.getElementById("canvas").classList.remove("ready");
         
         if (widgetState.r) {
           try {

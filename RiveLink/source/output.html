@@ -453,6 +453,11 @@
             defaultValue: defaultValue,
           };
 
+          // Add step property for number fields to support float values
+          if (fieldType === "number") {
+            field.step = "0.1";
+          }
+
           // Add selections array for enum/selection fields
           if (selections) {
             field.selections = selections;

@@ -40,7 +40,17 @@
         runtime: "",
         stateMachineIndex: 0,
         displayFpsCounter: false,
+        currentFont: "Default",
         layoutOptions: [ "Contain", "Cover", "Fill", "FitWidth", "FitHeight", "ScaleDown", "Layout", "None", ],
+        fontOptions: [
+          { name: "Default", url: null },
+          { name: "Roboto", url: "fonts/Roboto-Regular.ttf" },
+          { name: "Open Sans", url: "fonts/OpenSans-Regular.ttf" },
+          { name: "Lato", url: "fonts/Lato-Regular.ttf" },
+          { name: "Montserrat", url: "fonts/Montserrat-Regular.ttf" },
+          { name: "Poppins", url: "fonts/Poppins-Regular.ttf" },
+          { name: "LDF Comic Sans", url: "fonts/Ldfcomicsans-jj7l.ttf" },
+        ],
         runtimeSources: {
           webgl2: "https://unpkg.com/@rive-app/webgl2",
           canvas: "https://unpkg.com/@rive-app/canvas",
@@ -104,6 +114,46 @@
       }
 
       window.addEventListener("resize", resizeCanvas);
+      
+      // Load and apply font to a Rive asset
+      async function loadFontForAsset(asset, fontName) {
+        console.log(`[FONT] Loading font "${fontName}" for asset "${asset.name}"`);
+        
+        // Find the font URL
+        const fontConfig = widgetState.fontOptions.find(f => f.name === fontName);
+        
+        if (!fontConfig || !fontConfig.url) {
+          console.warn(`[FONT] No URL configured for font "${fontName}", skipping`);
+          return false;
+        }
+        
+        try {
+          // Fetch the font file
+          const response = await fetch(fontConfig.url);
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+          
+          const fontData = new Uint8Array(await response.arrayBuffer());
+          console.log(`[FONT] Fetched ${fontData.length} bytes for "${fontName}"`);
+          
+          // Decode the font using Rive's decodeFont API
+          const font = await window.rive.decodeFont(fontData);
+          console.log(`[FONT] Decoded font "${fontName}"`, font);
+          
+          // Set the font on the asset
+          asset.setFont(font);
+          console.log(`[FONT] ✓ Successfully applied font "${fontName}" to asset "${asset.name}"`);
+          
+          // Note: We don't call font.unref() here because the asset is using it
+          // The Rive runtime will handle cleanup when the animation is destroyed
+          
+          return true;
+        } catch (error) {
+          console.error(`[FONT] Failed to load font "${fontName}":`, error);
+          return false;
+        }
+      }
       
       // Displays FPS counter overlay (only if displayFpsCounter is true)
       function ensureFPSCounter(instance) {
@@ -218,6 +268,9 @@
             widgetState.displayFpsCounter = json.show_fps;
           }
 
+          // Store initial font selection (will be set from dynamic UI after Rive loads)
+          // Font selector is now part of dynamic UI, not static config
+
           const desiredRuntime = json.rive_renderer ? "webgl2" : "canvas";
           await toggleRiveRuntime(desiredRuntime);
 
@@ -241,6 +294,55 @@
           layout: new rive.Layout({ fit: rive.Fit[widgetState.layoutFit] }),
           enableFPSCounter: true,
           
+          // Asset loader for handling referenced fonts
+          assetLoader: (asset, bytes) => {
+            try {
+              const hasCdnUuid = asset.cdnUuid != null && asset.cdnUuid.length > 0;
+              const hasBytes   = Array.isArray(bytes) || (bytes instanceof Uint8Array)
+                ? bytes.length > 0
+                : false;
+
+              console.log(`[ASSET] Rive requesting asset:`, {
+                name: asset.name,
+                isFont: asset.isFont,
+                isImage: asset.isImage,
+                isAudio: asset.isAudio,
+                cdnUuid: asset.cdnUuid,
+                hasBytes,
+              });
+
+              // If asset is hosted on CDN or embedded, let runtime handle it
+              if (hasCdnUuid || hasBytes) {
+                console.log(`[ASSET] Letting runtime handle asset "${asset.name}"`);
+                return false;
+              }
+
+              // Handle referenced fonts
+              if (asset.isFont) {
+                // If the user hasn't selected a custom font, let the Rive runtime
+                // handle the asset with its own default behaviour. Returning true
+                // without successfully calling asset.setFont() would leave the
+                // asset unresolved and cause the file to fail to load.
+                if (widgetState.currentFont === "Default") {
+                  console.log(`[ASSET] Font is Default – letting runtime handle asset "${asset.name}"`);
+                  return false;
+                }
+
+                console.log(`[ASSET] Referenced font detected, loading "${widgetState.currentFont}"`);
+                loadFontForAsset(asset, widgetState.currentFont);
+                return true; // We're handling this asset
+              }
+
+              // Let runtime handle other asset types
+              return false;
+            } catch (err) {
+              // Never let an exception escape into the Rive WASM boundary —
+              // an uncaught error here is interpreted as a corrupt file.
+              console.error(`[ASSET] Unexpected error in assetLoader for "${asset?.name}":`, err);
+              return false;
+            }
+          },
+          
           onLoad: () => {
             resizeCanvas();
 
@@ -261,7 +363,7 @@
             // Show canvas after 0.4 second delay to ensure values are applied
             setTimeout(() => {
               document.getElementById("canvas").classList.add("ready");
-            }, 200);
+            }, 400);
           },
           onLoadError: (err) => {
             console.error("[Rive Error] Rive load error:", err);
@@ -351,6 +453,19 @@
             })),
           });
         }
+
+        // Add font selection field
+        const currentFontIndex = widgetState.fontOptions.findIndex(f => f.name === widgetState.currentFont);
+        fields.push({
+          id: "rivetextfont",
+          type: "selection",
+          title: "Text Font",
+          defaultValue: currentFontIndex >= 0 ? currentFontIndex.toString() : "0",
+          selections: widgetState.fontOptions.map((font, index) => ({
+            id: index.toString(),
+            title: font.name,
+          })),
+        });
 
         // Track parent property info for nested view models
         const viewModelParentInfo = {};
@@ -491,6 +606,15 @@
           });
         }
 
+        // Add font styling group
+        groups.push({
+          id: "textfontgroup",
+          title: "Text Styling",
+          width: "double",
+          toolTip: "Configure text font for all referenced font assets in Rive files",
+          childIds: ["rivetextfont"],
+        });
+
         // Add other property groups
         for (const [groupKey, childIds] of Object.entries(groupedProperties)) {
           const groupInfo = viewModelParentInfo[groupKey];
@@ -614,6 +738,24 @@
           widgetState.displayFpsCounter = json.show_fps === true;
           if (widgetState.r) {
             ensureFPSCounter(widgetState.r);
+          }
+        }
+
+        // Handle text font change (from dynamic UI)
+        if (json.rivetextfont !== undefined) {
+          const fontIndex = parseInt(json.rivetextfont, 10);
+          const selectedFont = widgetState.fontOptions[fontIndex];
+          
+          if (selectedFont && selectedFont.name !== widgetState.currentFont) {
+            console.log(`[FONT] Font changed from "${widgetState.currentFont}" to "${selectedFont.name}"`);
+            widgetState.currentFont = selectedFont.name;
+            
+            // Reload Rive file to apply new font to referenced font assets
+            if (widgetState.r && widgetState.fileUrl) {
+              console.log(`[FONT] Reloading Rive file to apply new font`);
+              reloadRive(widgetState.fileUrl);
+              return;
+            }
           }
         }
 

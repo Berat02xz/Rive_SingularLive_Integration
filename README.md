@@ -21,11 +21,15 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 - WebGL2/Canvas renderer support
 - Multiple layout options
 
-### V2 In Development
+### V2 Released
 - State machine selection
 - FPS counter for performance testing
 - Image and enum property support
-- Rive list → Singular table support *(in progress)*
+
+### V3 In Development
+- Startup flicker removal
+- Font change via Google Fonts URL from Singular Live *(heavy experimental phase)*
+- Rive list → Singular table support (ongoing development)
 
 ---
 

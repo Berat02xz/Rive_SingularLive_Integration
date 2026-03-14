@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html>
   <head>
     <style>
@@ -40,10 +40,10 @@
         runtime: "",
         stateMachineIndex: 0,
         displayFpsCounter: false,
-        currentFont: "Default",
+        currentFont: "Roboto",
+        hasReferencedFonts: false,
         layoutOptions: [ "Contain", "Cover", "Fill", "FitWidth", "FitHeight", "ScaleDown", "Layout", "None", ],
         fontOptions: [
-          { name: "Default", url: null },
           { name: "Roboto", url: "fonts/Roboto-Regular.ttf" },
           { name: "Open Sans", url: "fonts/OpenSans-Regular.ttf" },
           { name: "Lato", url: "fonts/Lato-Regular.ttf" },
@@ -117,40 +117,16 @@
       
       // Load and apply font to a Rive asset
       async function loadFontForAsset(asset, fontName) {
-        console.log(`[FONT] Loading font "${fontName}" for asset "${asset.name}"`);
-        
-        // Find the font URL
         const fontConfig = widgetState.fontOptions.find(f => f.name === fontName);
-        
-        if (!fontConfig || !fontConfig.url) {
-          console.warn(`[FONT] No URL configured for font "${fontName}", skipping`);
-          return false;
-        }
-        
+        if (!fontConfig?.url) return false;
         try {
-          // Fetch the font file
           const response = await fetch(fontConfig.url);
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-          }
-          
-          const fontData = new Uint8Array(await response.arrayBuffer());
-          console.log(`[FONT] Fetched ${fontData.length} bytes for "${fontName}"`);
-          
-          // Decode the font using Rive's decodeFont API
-          const font = await window.rive.decodeFont(fontData);
-          console.log(`[FONT] Decoded font "${fontName}"`, font);
-          
-          // Set the font on the asset
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const font = await window.rive.decodeFont(new Uint8Array(await response.arrayBuffer()));
           asset.setFont(font);
-          console.log(`[FONT] ✓ Successfully applied font "${fontName}" to asset "${asset.name}"`);
-          
-          // Note: We don't call font.unref() here because the asset is using it
-          // The Rive runtime will handle cleanup when the animation is destroyed
-          
           return true;
         } catch (error) {
-          console.error(`[FONT] Failed to load font "${fontName}":`, error);
+          console.error(`Failed to load font "${fontName}":`, error);
           return false;
         }
       }
@@ -171,14 +147,86 @@
         }
       }
 
+      // Read scalar properties from a ViewModelInstance into a plain JS object
+      function readInstanceProperties(instance) {
+        const obj = {};
+        for (const _p of instance.properties) {
+          try {
+            if (_p.type === "string")       obj[_p.name] = instance.string(_p.name)?.value  ?? "";
+            else if (_p.type === "number")  obj[_p.name] = instance.number(_p.name)?.value  ?? 0;
+            else if (_p.type === "boolean") obj[_p.name] = instance.boolean(_p.name)?.value ?? false;
+          } catch {}
+        }
+        return obj;
+      }
+
+      // Apply scalar properties from a plain object to a ViewModelInstance
+      function applyPropsToInstance(inst, itemData) {
+        for (const key of Object.keys(itemData)) {
+          if (key.startsWith('_')) continue;
+          const val = itemData[key];
+          try {
+            if (typeof val === 'string')       { const a = inst.string(key);  if (a) a.value = val; }
+            else if (typeof val === 'number')  { const a = inst.number(key);  if (a) a.value = val; }
+            else if (typeof val === 'boolean') { const a = inst.boolean(key); if (a) a.value = val; }
+          } catch {}
+        }
+      }
+
       // Get all view models and collect their properties (including nested VMs)
       function GetAllViewModelProperties(rive) {
         const props = {};
         const vmMetadata = {};
-        const vmi = rive.viewModelInstance;
-        const defaultVM = rive.defaultViewModel();
+
+        if (rive.viewModelCount === 0) return { props, vmMetadata, defaultVMName: "" };
+
+        const _defaultVM = rive.defaultViewModel();
+        let vmi       = rive.viewModelInstance;
+        let defaultVM = _defaultVM;
+
+        if (!defaultVM) return { props, vmMetadata, defaultVMName: "" };
+
+        const _autoHasList = defaultVM.properties.some(p => p.type === "list");
+
+        if (!_autoHasList || !vmi) {
+          let chosenVM = null;
+          for (let _vi = 0; _vi < rive.viewModelCount; _vi++) {
+            const _v = rive.viewModelByIndex(_vi);
+            if (_v && _v.properties.some(p => p.type === "list")) { chosenVM = _v; break; }
+          }
+          if (!chosenVM) chosenVM = defaultVM;
+          const _newInst = chosenVM.defaultInstance() ?? chosenVM.instance();
+          if (_newInst) {
+            rive.bindViewModelInstance(_newInst);
+            vmi       = _newInst;
+            defaultVM = chosenVM;
+          } else if (!vmi) {
+            return { props, vmMetadata, defaultVMName: "" };
+          }
+        }
+
         const defaultVMName = defaultVM.name;
-        const processedVMs = new Set();
+        const processedVMs  = new Set();
+
+        // Try to match a ViewModelInstance's property signature against all known VMs
+        // to figure out which VM type a list item belongs to
+        function findVMNameForInstance(instance) {
+          if (!instance) return null;
+          try {
+            const instanceProps = instance.properties;
+            for (let _vi = 0; _vi < rive.viewModelCount; _vi++) {
+              const _vm = rive.viewModelByIndex(_vi);
+              if (!_vm) continue;
+              const _vmProps = _vm.properties;
+              if (_vmProps.length !== instanceProps.length) continue;
+              const allMatch = instanceProps.every(ip =>
+                _vmProps.find(vp => vp.name === ip.name && vp.type === ip.type)
+              );
+              if (allMatch) return _vm.name;
+            }
+          } catch {}
+          return null;
+        }
 
         // Recursively process a view model and its properties
         function processViewModel(vm, pathPrefix = "") {
@@ -216,33 +264,34 @@
             let accessor = null;
             try {
               switch (property.type) {
-                case "string": accessor = vmi.string(propertyPath); break;
-                case "number": accessor = vmi.number(propertyPath); break;
-                case "boolean": accessor = vmi.boolean(propertyPath); break;
-                case "trigger": accessor = vmi.trigger(propertyPath); break;
-                case "color": accessor = vmi.color(propertyPath); break;
-                case "image": accessor = vmi.image(propertyPath); break;
-                case "enumType": accessor = vmi.enum(propertyPath); break;
+                case "string":   accessor = vmi.string(propertyPath);  break;
+                case "number":   accessor = vmi.number(propertyPath);  break;
+                case "boolean":  accessor = vmi.boolean(propertyPath); break;
+                case "trigger":  accessor = vmi.trigger(propertyPath); break;
+                case "color":    accessor = vmi.color(propertyPath);   break;
+                case "image":    accessor = vmi.image(propertyPath);   break;
+                case "enumType": accessor = vmi.enum(propertyPath);    break;
                 case "artboard": accessor = vmi.artboard(propertyPath); break;
+                case "list": {
+                  accessor = vmi.list(propertyPath);
+                  break;
+                }
+                default: break;
               }
             } catch (err) {
-              console.error("Error mapping: " + propertyPath + " " + err.message,);
+              console.error("Error mapping: " + propertyPath + " " + err.message);
             }
 
             if (accessor) {
               const propKey = propertyPath.replace(/\//g, "_");
-              const propData = {
-                type: property.type,
-                accessor,
-                path: propertyPath,
-              };
+              const propData = { type: property.type, accessor, path: propertyPath };
 
               if (property.type === "enumType" && accessor.values) {
                 propData.enumValues = accessor.values;
               }
-
-              if (property.type === "artboard") {
-                propData.artboardNames = [];
+              if (property.type === "list") {
+                // addedInstances tracks VMIs we added so the runtime doesn't GC them
+                propData.addedInstances = [];
               }
 
               props[propKey] = propData;
@@ -251,6 +300,8 @@
         }
 
         processViewModel(defaultVM);
+
+        widgetState._findVMNameForInstance = findVMNameForInstance;
 
         return { props, vmMetadata, defaultVMName };
       }
@@ -285,6 +336,7 @@
 
       // Initialize Rive with a given file URL
       function initializeRive(fileUrl) {
+        widgetState.hasReferencedFonts = false;
         const riveConfig = {
           src: fileUrl,
           canvas: document.getElementById("canvas"),
@@ -294,51 +346,19 @@
           layout: new rive.Layout({ fit: rive.Fit[widgetState.layoutFit] }),
           enableFPSCounter: true,
           
-          // Asset loader for handling referenced fonts
           assetLoader: (asset, bytes) => {
             try {
               const hasCdnUuid = asset.cdnUuid != null && asset.cdnUuid.length > 0;
-              const hasBytes   = Array.isArray(bytes) || (bytes instanceof Uint8Array)
-                ? bytes.length > 0
-                : false;
-
-              console.log(`[ASSET] Rive requesting asset:`, {
-                name: asset.name,
-                isFont: asset.isFont,
-                isImage: asset.isImage,
-                isAudio: asset.isAudio,
-                cdnUuid: asset.cdnUuid,
-                hasBytes,
-              });
-
-              // If asset is hosted on CDN or embedded, let runtime handle it
-              if (hasCdnUuid || hasBytes) {
-                console.log(`[ASSET] Letting runtime handle asset "${asset.name}"`);
-                return false;
-              }
-
-              // Handle referenced fonts
+              const hasBytes = (Array.isArray(bytes) || bytes instanceof Uint8Array) && bytes.length > 0;
+              if (hasCdnUuid || hasBytes) return false;
               if (asset.isFont) {
-                // If the user hasn't selected a custom font, let the Rive runtime
-                // handle the asset with its own default behaviour. Returning true
-                // without successfully calling asset.setFont() would leave the
-                // asset unresolved and cause the file to fail to load.
-                if (widgetState.currentFont === "Default") {
-                  console.log(`[ASSET] Font is Default – letting runtime handle asset "${asset.name}"`);
-                  return false;
-                }
-
-                console.log(`[ASSET] Referenced font detected, loading "${widgetState.currentFont}"`);
+                widgetState.hasReferencedFonts = true;
                 loadFontForAsset(asset, widgetState.currentFont);
-                return true; // We're handling this asset
+                return true;
               }
-
-              // Let runtime handle other asset types
               return false;
             } catch (err) {
-              // Never let an exception escape into the Rive WASM boundary —
-              // an uncaught error here is interpreted as a corrupt file.
-              console.error(`[ASSET] Unexpected error in assetLoader for "${asset?.name}":`, err);
+              console.error(`assetLoader error for "${asset?.name}":`, err);
               return false;
             }
           },
@@ -370,8 +390,8 @@
           },
         };
         
-        riveConfig.artboard = widgetState.artboardName;
-        riveConfig.stateMachines = widgetState.stateMachineName;
+        if (widgetState.artboardName) riveConfig.artboard = widgetState.artboardName;
+        if (widgetState.stateMachineName) riveConfig.stateMachines = widgetState.stateMachineName;
 
         widgetState.r = new rive.Rive(riveConfig);
       }
@@ -454,18 +474,20 @@
           });
         }
 
-        // Add font selection field
-        const currentFontIndex = widgetState.fontOptions.findIndex(f => f.name === widgetState.currentFont);
-        fields.push({
-          id: "rivetextfont",
-          type: "selection",
-          title: "Text Font",
-          defaultValue: currentFontIndex >= 0 ? currentFontIndex.toString() : "0",
-          selections: widgetState.fontOptions.map((font, index) => ({
-            id: index.toString(),
-            title: font.name,
-          })),
-        });
+        // Add font selection field — only when the Rive file has referenced fonts
+        if (widgetState.hasReferencedFonts) {
+          const currentFontIndex = widgetState.fontOptions.findIndex(f => f.name === widgetState.currentFont);
+          fields.push({
+            id: "rivetextfont",
+            type: "selection",
+            title: "Text Font",
+            defaultValue: currentFontIndex >= 0 ? currentFontIndex.toString() : "0",
+            selections: widgetState.fontOptions.map((font, index) => ({
+              id: index.toString(),
+              title: font.name,
+            })),
+          });
+        }
 
         // Track parent property info for nested view models
         const viewModelParentInfo = {};
@@ -555,7 +577,19 @@
               }
               break;
             }
-            default: console.warn(`Unknown property type: ${prop.type} for ${name}`);
+            case "list": {
+              fieldType = "json";
+              const _initialItems = [];
+              for (let _ii = 0; _ii < (prop.accessor.length ?? 0); _ii++) {
+                try {
+                  const _item = prop.accessor.instanceAt(_ii);
+                  if (_item) _initialItems.push({ _vm: widgetState._findVMNameForInstance?.(_item) ?? "UnknownVM", ...readInstanceProperties(_item) });
+                } catch {}
+              }
+              defaultValue = _initialItems.length > 0 ? JSON.stringify(_initialItems, null, 2) : "[]";
+              break;
+            }
+            default: break;
           }
 
           // Use alphanumeric ID for dynamic fields
@@ -571,6 +605,12 @@
           // Add step property for number fields to support float values
           if (fieldType === "number") {
             field.step = "0.1";
+          }
+
+          // Add dimensions for JSON (list) fields
+          if (fieldType === "json") {
+            field.width = "350";
+            field.height = "200";
           }
 
           // Add selections array for enum/selection fields
@@ -606,14 +646,16 @@
           });
         }
 
-        // Add font styling group
-        groups.push({
-          id: "textfontgroup",
-          title: "Text Styling",
-          width: "double",
-          toolTip: "Configure text font for all referenced font assets in Rive files",
-          childIds: ["rivetextfont"],
-        });
+        // Add font styling group — only when the Rive file has referenced fonts
+        if (widgetState.hasReferencedFonts) {
+          groups.push({
+            id: "textfontgroup",
+            title: "Text Styling",
+            width: "double",
+            toolTip: "Configure text font for all referenced font assets in Rive files",
+            childIds: ["rivetextfont"],
+          });
+        }
 
         // Add other property groups
         for (const [groupKey, childIds] of Object.entries(groupedProperties)) {
@@ -657,9 +699,8 @@
             fields: fields,
             groups: groups,
           };
-          console.log(`Sending UI Model to Singular:`, JSON.stringify(uiModel, null, 2),);
-          const res = SingularWidget.setCustomWidgetUI(uiModel);
-          console.log(`Singular UI response:`, res);
+          console.log("Sending UI Model to Singular:", JSON.stringify(uiModel, null, 2));
+          SingularWidget.setCustomWidgetUI(uiModel);
       }
 
       // Handle singular value change
@@ -747,12 +788,8 @@
           const selectedFont = widgetState.fontOptions[fontIndex];
           
           if (selectedFont && selectedFont.name !== widgetState.currentFont) {
-            console.log(`[FONT] Font changed from "${widgetState.currentFont}" to "${selectedFont.name}"`);
             widgetState.currentFont = selectedFont.name;
-            
-            // Reload Rive file to apply new font to referenced font assets
             if (widgetState.r && widgetState.fileUrl) {
-              console.log(`[FONT] Reloading Rive file to apply new font`);
               reloadRive(widgetState.fileUrl);
               return;
             }
@@ -964,8 +1001,36 @@
                     ? Math.round(colorData.a * 255)
                     : 255;
                 prop.accessor.rgba(r, g, b, a);
-              } else {
-                console.warn(`Unknown color format for ${name}:`, colorData);
+              }
+            }
+
+            if (prop.type === "list") {
+              let _items;
+              try {
+                const _raw = json[alphanumericId];
+                const _parsed = typeof _raw === 'string' ? JSON.parse(_raw) : _raw;
+                _items = Array.isArray(_parsed) ? _parsed : [_parsed];
+              } catch { continue; }
+
+              const _listAcc = widgetState.r.viewModelInstance.list(prop.path) ?? prop.accessor;
+              for (let _ri = (_listAcc.length ?? 0) - 1; _ri >= 0; _ri--) {
+                try { _listAcc.removeInstanceAt(_ri); } catch {}
+              }
+
+              prop.addedInstances = [];
+              for (let _ai = 0; _ai < _items.length; _ai++) {
+                const _item = _items[_ai];
+                if (!_item._vm) continue;
+                let _vm, _inst;
+                try { _vm = widgetState.r.viewModelByName(_item._vm); } catch {}
+                try { _inst = _vm?.instance(); } catch {}
+                if (!_inst) continue;
+                applyPropsToInstance(_inst, _item);
+                try {
+                  _listAcc.addInstance(_inst);
+                  prop.addedInstances.push(_inst);
+                  applyPropsToInstance(_listAcc.instanceAt(_ai), _item);
+                } catch {}
               }
             }
           } catch (err) {
@@ -977,21 +1042,11 @@
       // Reload Rive instance with new parameters
       // Cleans up existing instance before re-initializing
       function reloadRive(fileUrl) {
-        console.log("[reloadRive] Cleaning up and reloading...");
-        
-        // Hide canvas immediately when reloading
         document.getElementById("canvas").classList.remove("ready");
-        
         if (widgetState.r) {
-          try {
-            widgetState.r.cleanup();
-            console.log("[reloadRive] Cleanup successful");
-          } catch (err) {
-            console.warn("[reloadRive] Error cleaning up Rive:", err);
-          }
+          try { widgetState.r.cleanup(); } catch {}
           widgetState.r = null;
         }
-
         initializeRive(fileUrl);
       }
 

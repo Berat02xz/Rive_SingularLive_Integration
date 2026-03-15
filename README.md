@@ -29,7 +29,7 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 ### V3 In Development
 - Startup flicker removal
 - Font change via Google Fonts URL from Singular Live *(heavy experimental phase)*
-- Rive list → Singular table support (ongoing development)
+- Rive list → Singular table support
 
 ---
 

@@ -4,6 +4,9 @@
 
 This project brings **Rive’s WebGL2-based rendering and ViewModel architecture** into **Singular Live widgets**.  
 The goal is to enable seamless use of `.riv` files as live, data-driven overlays directly inside the Singular Live ecosystem — complete with vector feathering, GPU acceleration, and dynamic control via Rive’s ViewModelInstances.
+
+![Gif](https://github.com/BeratAhmetaj/MusicApp/blob/master/.github/2%rive1.gif)
+
 ## What This Widget Does
 
 - **Real-time Rive Animation Rendering** – Load `.riv` files directly into Singular.Live compositions with WebGL2 or Canvas rendering
@@ -12,6 +15,9 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 - **State Machine Support** – Select and control different state machines dynamically
 - **Live Data Binding** – Update Rive animations in real-time based on Singular.Live data sources
 - **Nested ViewModel Support** – Handles complex Rive files with nested ViewModels and maintains property hierarchy
+
+![Gif](https://github.com/BeratAhmetaj/MusicApp/blob/master/.github/2%rive2.gif)
+
 
 ## Release Status
 

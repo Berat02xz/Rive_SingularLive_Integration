@@ -166,11 +166,13 @@
       const overlay = document.getElementById("rive-fps-counter");
       if (widgetState.displayFpsCounter) {
         overlay.style.display = "block";
-        instance.enableFPSCounter((fps) => {
-          if (widgetState.displayFpsCounter) {
-            overlay.textContent = `FPS: ${Math.round(fps)}`;
-          }
-        });
+        try {
+          instance.enableFPSCounter((fps) => {
+            if (widgetState.displayFpsCounter) {
+              overlay.textContent = `FPS: ${Math.round(fps)}`;
+            }
+          });
+        } catch {}
       } else {
         overlay.style.display = "none";
       }
@@ -621,6 +623,7 @@
         enableFPSCounter: true,
 
         assetLoader: (asset, bytes) => {
+          if (!asset) return false;
           try {
             const hasCdnUuid = asset.cdnUuid != null && asset.cdnUuid.length > 0;
             const hasBytes = (Array.isArray(bytes) || bytes instanceof Uint8Array) && bytes.length > 0;

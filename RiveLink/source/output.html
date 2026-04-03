@@ -43,8 +43,6 @@
       runtime: "",
       stateMachineIndex: 0,
       displayFpsCounter: false,
-      currentFont: "Roboto",
-      hasReferencedFonts: false,
       pendingInitialValues: null,
       vmMetadata: {},
       defaultVMName: "",
@@ -52,14 +50,6 @@
 
       layoutOptions: [
         "Contain", "Cover", "Fill", "FitWidth", "FitHeight", "ScaleDown", "Layout", "None",
-      ],
-      fontOptions: [
-        { name: "Roboto", url: "fonts/Roboto-Regular.ttf" },
-        { name: "Open Sans", url: "fonts/OpenSans-Regular.ttf" },
-        { name: "Lato", url: "fonts/Lato-Regular.ttf" },
-        { name: "Montserrat", url: "fonts/Montserrat-Regular.ttf" },
-        { name: "Poppins", url: "fonts/Poppins-Regular.ttf" },
-        { name: "LDF Comic Sans", url: "fonts/Ldfcomicsans-jj7l.ttf" },
       ],
       runtimeSources: {
         webgl2: "https://unpkg.com/@rive-app/webgl2",
@@ -128,25 +118,6 @@
         };
         script.onerror = () => reject(new Error(`Failed to load ${desiredRuntime}`));
       });
-    }
-
-    // =========================================================================
-    // Fonts
-    // =========================================================================
-
-    async function loadFontForAsset(asset, fontName) {
-      const fontConfig = widgetState.fontOptions.find(f => f.name === fontName);
-      if (!fontConfig?.url) return false;
-      try {
-        const response = await fetch(fontConfig.url);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const font = await window.rive.decodeFont(new Uint8Array(await response.arrayBuffer()));
-        asset.setFont(font);
-        return true;
-      } catch (error) {
-        console.error(`Failed to load font "${fontName}":`, error);
-        return false;
-      }
     }
 
     // =========================================================================
@@ -447,16 +418,6 @@
       });
     }
 
-    function addFontField(fields) {
-      if (!widgetState.hasReferencedFonts) return;
-      const currentIndex = widgetState.fontOptions.findIndex(f => f.name === widgetState.currentFont);
-      fields.push({
-        id: "rivetextfont", type: "selection", title: "Text Font",
-        defaultValue: currentIndex >= 0 ? currentIndex.toString() : "0",
-        selections: widgetState.fontOptions.map((font, i) => ({ id: i.toString(), title: font.name })),
-      });
-    }
-
     function resolveGroupInfo(name) {
       let viewModelName = widgetState.defaultVMName || "Main";
       let parentPropertyName = null;
@@ -547,10 +508,6 @@
         groups.push({ id: "artboardgroup", title: "Artboard Selection", width: "double", toolTip: "Select the artboard to display", childIds });
       }
 
-      if (widgetState.hasReferencedFonts) {
-        groups.push({ id: "textfontgroup", title: "Text Styling", width: "double", toolTip: "Configure text font for all referenced font assets in Rive files", childIds: ["rivetextfont"] });
-      }
-
       for (const [groupKey, childIds] of Object.entries(groupedProperties)) {
         const groupInfo = viewModelParentInfo[groupKey];
         let groupTitle = groupKey, vmName = groupKey;
@@ -584,7 +541,6 @@
 
       addArtboardField(fields, availableArtboards, currentArtboardIndex);
       addStateMachineField(fields);
-      addFontField(fields);
 
       // Dynamic property fields
       for (const [name, prop] of Object.entries(widgetState.riveProps)) {
@@ -611,8 +567,6 @@
     // =========================================================================
 
     function initializeRive(fileUrl) {
-      widgetState.hasReferencedFonts = false;
-
       const riveConfig = {
         src: fileUrl,
         canvas: document.getElementById("canvas"),
@@ -621,24 +575,6 @@
         ...(widgetState.runtime === "webgl2" ? { useOffscreenRenderer: true } : {}),
         layout: new rive.Layout({ fit: rive.Fit[widgetState.layoutFit] }),
         enableFPSCounter: true,
-
-        assetLoader: (asset, bytes) => {
-          if (!asset) return false;
-          try {
-            const hasCdnUuid = asset.cdnUuid != null && asset.cdnUuid.length > 0;
-            const hasBytes = (Array.isArray(bytes) || bytes instanceof Uint8Array) && bytes.length > 0;
-            if (hasCdnUuid || hasBytes) return false;
-            if (asset.isFont) {
-              widgetState.hasReferencedFonts = true;
-              loadFontForAsset(asset, widgetState.currentFont);
-              return true;
-            }
-            return false;
-          } catch (err) {
-            console.error(`assetLoader error for "${asset?.name}":`, err);
-            return false;
-          }
-        },
 
         onLoad: () => {
           resizeCanvas();
@@ -738,16 +674,6 @@
       if (json.show_fps !== undefined) {
         widgetState.displayFpsCounter = json.show_fps === true;
         if (widgetState.r) ensureFPSCounter(widgetState.r);
-      }
-
-      // Font change
-      if (json.rivetextfont !== undefined) {
-        const fontIndex = parseInt(json.rivetextfont, 10);
-        const selectedFont = widgetState.fontOptions[fontIndex];
-        if (selectedFont && selectedFont.name !== widgetState.currentFont) {
-          widgetState.currentFont = selectedFont.name;
-          if (widgetState.r && widgetState.fileUrl) { reloadRive(widgetState.fileUrl); return; }
-        }
       }
 
       // Layout change

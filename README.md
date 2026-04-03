@@ -32,10 +32,12 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 - FPS counter for performance testing
 - Image and enum property support
 
-### V3 In Development
+### V3 Released
 - Startup flicker removal
-- Font change via Google Fonts URL from Singular Live *(heavy experimental phase)*
 - Rive list → Singular table support
+
+### V4 Planned
+- Font change via Google Fonts from Singular Live *(heavy experimental phase)*
 
 ---
 

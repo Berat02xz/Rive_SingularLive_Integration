@@ -36,6 +36,7 @@
     const widgetState = {
       riveProps: {},
       r: null,
+      riveReady: false,
       artboardName: "",
       stateMachineName: "",
       layoutFit: "",
@@ -85,11 +86,11 @@
           if (window.rive && typeof window.rive.Rive === 'function') {
             clearInterval(timer);
             resolve();
-          } else if (Date.now() - start > 200) {
+          } else if (Date.now() - start > 5000) {
             clearInterval(timer);
             reject(new Error('Timed out waiting for Rive global'));
           }
-        }, 200);
+        }, 50);
       });
     }
 
@@ -268,7 +269,16 @@
             const propKey = propertyPath.replace(/\//g, "_");
             const propData = { type: property.type, accessor, path: propertyPath };
             if (property.type === "enumType" && accessor.values) propData.enumValues = accessor.values;
-            if (property.type === "list") propData.addedInstances = [];
+            if (property.type === "list") {
+              propData.addedInstances = [];
+              if ((accessor.length ?? 0) > 0) {
+                try {
+                  const firstItem = accessor.instanceAt(0);
+                  const detected = findVMNameForInstance(firstItem);
+                  if (detected) propData.itemVMName = detected;
+                } catch {}
+              }
+            }
             props[propKey] = propData;
           }
         }
@@ -351,7 +361,9 @@
         items = Array.isArray(parsed) ? parsed : [parsed];
       } catch { return; }
 
-      const listAcc = widgetState.r.viewModelInstance.list(prop.path) ?? prop.accessor;
+      const vmi = widgetState.r.viewModelInstance;
+      if (!vmi) return;
+      const listAcc = vmi.list(prop.path) ?? prop.accessor;
       for (let i = (listAcc.length ?? 0) - 1; i >= 0; i--) { try { listAcc.removeInstanceAt(i); } catch {} }
 
       prop.addedInstances = [];
@@ -462,7 +474,7 @@
       for (let i = 0; i < (prop.accessor.length ?? 0); i++) {
         try {
           const item = prop.accessor.instanceAt(i);
-          if (item) items.push({ _vm: widgetState._findVMNameForInstance?.(item) ?? "UnknownVM", ...readInstanceProperties(item) });
+          if (item) items.push({ _vm: widgetState._findVMNameForInstance?.(item) ?? prop.itemVMName ?? "UnknownVM", ...readInstanceProperties(item) });
         } catch {}
       }
       return items.length > 0 ? JSON.stringify(items, null, 2) : "[]";
@@ -567,6 +579,17 @@
     // =========================================================================
 
     function initializeRive(fileUrl) {
+      widgetState.riveReady = false;
+      const loadGen = (widgetState._loadGen = (widgetState._loadGen ?? 0) + 1);
+
+      // Watchdog: if onLoad never fires within 5s, retry once
+      const watchdog = setTimeout(() => {
+        if (!widgetState.riveReady && widgetState._loadGen === loadGen) {
+          console.warn("[Rive] onLoad watchdog triggered — retrying initializeRive");
+          reloadRive(widgetState.fileUrl);
+        }
+      }, 5000);
+
       const riveConfig = {
         src: fileUrl,
         canvas: document.getElementById("canvas"),
@@ -577,6 +600,7 @@
         enableFPSCounter: true,
 
         onLoad: () => {
+          clearTimeout(watchdog);
           resizeCanvas();
 
           const vmData = getAllViewModelProperties(widgetState.r);
@@ -586,6 +610,7 @@
 
           generateUIModel();
           ensureFPSCounter(widgetState.r);
+          widgetState.riveReady = true;
 
           if (widgetState.pendingInitialValues) {
             const initialValues = widgetState.pendingInitialValues;
@@ -716,7 +741,7 @@
         }
       }
 
-      if (!widgetState.r) return;
+      if (!widgetState.r || !widgetState.riveReady) return;
       updateDynamicProperties(json);
     }
 
@@ -740,7 +765,12 @@
         widgetState.layoutFit = widgetState.layoutOptions?.[layoutIndex] || widgetState.layoutFit || "Contain";
         if (json.show_fps !== undefined) widgetState.displayFpsCounter = json.show_fps;
         const desiredRuntime = json.rive_renderer ? "webgl2" : "canvas";
-        await toggleRiveRuntime(desiredRuntime);
+        try {
+          await toggleRiveRuntime(desiredRuntime);
+        } catch (e) {
+          console.warn("[Rive] Failed to load", desiredRuntime, "— falling back to canvas:", e);
+          try { await toggleRiveRuntime("canvas"); } catch {}
+        }
         if (typeof json.rive_file_url === "string" && json.rive_file_url.endsWith(".riv")) {
           widgetState.fileUrl = json.rive_file_url;
           initializeRive(json.rive_file_url);

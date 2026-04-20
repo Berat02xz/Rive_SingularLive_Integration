@@ -369,9 +369,10 @@
       prop.addedInstances = [];
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
-        if (!item._vm) continue;
+        const vmName = item._vm ?? prop.itemVMName;
+        if (!vmName) continue;
         let vm, inst;
-        try { vm = widgetState.r.viewModelByName(item._vm); } catch {}
+        try { vm = widgetState.r.viewModelByName(vmName); } catch {}
         try { inst = vm?.instance(); } catch {}
         if (!inst) continue;
         applyPropsToInstance(inst, item);
@@ -474,7 +475,11 @@
       for (let i = 0; i < (prop.accessor.length ?? 0); i++) {
         try {
           const item = prop.accessor.instanceAt(i);
-          if (item) items.push({ _vm: widgetState._findVMNameForInstance?.(item) ?? prop.itemVMName ?? "UnknownVM", ...readInstanceProperties(item) });
+          if (item) {
+            const vmName = widgetState._findVMNameForInstance?.(item) ?? prop.itemVMName;
+            if (vmName && !prop.itemVMName) prop.itemVMName = vmName;
+            items.push({ ...readInstanceProperties(item) });
+          }
         } catch {}
       }
       return items.length > 0 ? JSON.stringify(items, null, 2) : "[]";

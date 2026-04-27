@@ -95,30 +95,51 @@
     }
 
     async function toggleRiveRuntime(desiredRuntime) {
-      if (widgetState.runtime === desiredRuntime && window.rive) return;
+      // Serialize: if another switch is already in flight, wait for it to finish
+      // before checking state. This prevents two concurrent toggles from racing
+      // (e.g. onInit and onSingularValue both calling this simultaneously).
+      while (widgetState._runtimeSwitching) {
+        await widgetState._runtimeSwitching;
+      }
 
-      const existing = document.getElementById("rive-runtime-script");
+      if (widgetState.runtime === desiredRuntime && window.rive) {
+        console.log(`[Runtime] Already on ${desiredRuntime}, skipping toggle`);
+        return;
+      }
+      console.log(`[Runtime] Switching to ${desiredRuntime} (was: ${widgetState.runtime || 'none'})`);
+
+      let switchResolve;
+      widgetState._runtimeSwitching = new Promise(r => { switchResolve = r; });
+
       try {
-        existing.remove();
-        widgetState.r?.cleanup();
-        delete window.rive;
-      } catch {}
+        const existing = document.getElementById("rive-runtime-script");
+        try {
+          existing?.remove();
+          widgetState.r?.cleanup();
+          delete window.rive;
+        } catch {}
 
-      const script = document.createElement("script");
-      script.id = "rive-runtime-script";
-      script.src = widgetState.runtimeSources[desiredRuntime];
-      document.body.prepend(script);
+        const script = document.createElement("script");
+        script.id = "rive-runtime-script";
+        script.src = widgetState.runtimeSources[desiredRuntime];
+        document.body.prepend(script);
 
-      await new Promise((resolve, reject) => {
-        script.onload = async () => {
-          try {
-            await waitForRiveGlobal();
-            widgetState.runtime = desiredRuntime;
-            resolve();
-          } catch (e) { reject(e); }
-        };
-        script.onerror = () => reject(new Error(`Failed to load ${desiredRuntime}`));
-      });
+        await new Promise((resolve, reject) => {
+          script.onload = async () => {
+            console.log(`[Runtime] Script loaded for ${desiredRuntime}, waiting for Rive global...`);
+            try {
+              await waitForRiveGlobal();
+              console.log(`[Runtime] Rive global ready for ${desiredRuntime}`);
+              widgetState.runtime = desiredRuntime;
+              resolve();
+            } catch (e) { reject(e); }
+          };
+          script.onerror = () => reject(new Error(`Failed to load ${desiredRuntime}`));
+        });
+      } finally {
+        widgetState._runtimeSwitching = null;
+        switchResolve();
+      }
     }
 
     // =========================================================================
@@ -586,11 +607,12 @@
     function initializeRive(fileUrl) {
       widgetState.riveReady = false;
       const loadGen = (widgetState._loadGen = (widgetState._loadGen ?? 0) + 1);
+      console.log(`[Rive] initializeRive gen=${loadGen} runtime=${widgetState.runtime} artboard="${widgetState.artboardName}" sm="${widgetState.stateMachineName}" url=${fileUrl}`);
 
       // Watchdog: if onLoad never fires within 5s, retry once
       const watchdog = setTimeout(() => {
         if (!widgetState.riveReady && widgetState._loadGen === loadGen) {
-          console.warn("[Rive] onLoad watchdog triggered — retrying initializeRive");
+          console.warn(`[Rive] Watchdog fired gen=${loadGen} — onLoad never fired, retrying`);
           reloadRive(widgetState.fileUrl);
         }
       }, 5000);
@@ -606,6 +628,7 @@
 
         onLoad: () => {
           clearTimeout(watchdog);
+          console.log(`[Rive] onLoad fired gen=${loadGen} (active gen=${widgetState._loadGen}) sm names=${JSON.stringify(widgetState.r?.stateMachineNames)}`);
           resizeCanvas();
 
           const vmData = getAllViewModelProperties(widgetState.r);
@@ -616,25 +639,42 @@
           generateUIModel();
           ensureFPSCounter(widgetState.r);
           widgetState.riveReady = true;
+          console.log(`[Rive] riveReady=true gen=${loadGen}`);
+
+          // Guard: only show canvas if this is still the active load
+          const genAtLoad = loadGen;
+          setTimeout(() => {
+            if (widgetState._loadGen === genAtLoad) {
+              console.log(`[Rive] Showing canvas gen=${genAtLoad}`);
+              document.getElementById("canvas").classList.add("ready");
+            } else {
+              console.log(`[Rive] Skipping canvas show — gen stale (${genAtLoad} vs active ${widgetState._loadGen})`);
+            }
+          }, 400);
 
           if (widgetState.pendingInitialValues) {
             const initialValues = widgetState.pendingInitialValues;
             widgetState.pendingInitialValues = null;
-            onSingularValue(initialValues);
+            console.log(`[Rive] Deferring onSingularValue with pending values gen=${loadGen}`, Object.keys(initialValues));
+            // Defer outside the Rive callback — calling cleanup() from within
+            // onLoad is unsafe for the WebGL2 offscreen renderer and causes freezes
+            setTimeout(() => onSingularValue(initialValues), 0);
+          } else {
+            console.log(`[Rive] No pending values at onLoad gen=${loadGen}`);
           }
-
-          setTimeout(() => { document.getElementById("canvas").classList.add("ready"); }, 400);
         },
 
-        onLoadError: (err) => { console.error("[Rive Error] Rive load error:", err); },
+        onLoadError: (err) => { console.error("[Rive] onLoadError:", err); },
       };
 
       if (widgetState.artboardName) riveConfig.artboard = widgetState.artboardName;
       if (widgetState.stateMachineName) riveConfig.stateMachines = widgetState.stateMachineName;
+      console.log(`[Rive] new rive.Rive() with artboard="${riveConfig.artboard ?? '(default)'}" stateMachines="${riveConfig.stateMachines ?? '(none)'}" useOffscreenRenderer=${!!riveConfig.useOffscreenRenderer}`);
       widgetState.r = new rive.Rive(riveConfig);
     }
 
     function reloadRive(fileUrl) {
+      console.log(`[Rive] reloadRive — cleaning up and reinitializing`);
       document.getElementById("canvas").classList.remove("ready");
       if (widgetState.r) { try { widgetState.r.cleanup(); } catch {} widgetState.r = null; }
       initializeRive(fileUrl);
@@ -672,6 +712,7 @@
       if (json.rive_renderer !== undefined) {
         const desiredRuntime = json.rive_renderer !== false ? "webgl2" : "canvas";
         const needLoad = !widgetState.runtime || widgetState.runtime !== desiredRuntime || !window.rive;
+        console.log(`[Flow] rive_renderer=${json.rive_renderer} desiredRuntime=${desiredRuntime} needLoad=${needLoad}`);
         if (needLoad) {
           try { await toggleRiveRuntime(desiredRuntime); }
           catch (e) { console.error("Failed to load desired runtime:", desiredRuntime, e); return; }
@@ -683,6 +724,7 @@
         if (typeof json.rive_file_url === "string" && json.rive_file_url.endsWith(".riv")) {
           const newFileUrl = json.rive_file_url;
           if (newFileUrl !== widgetState.fileUrl) {
+            console.log(`[Flow] File URL changed → ${newFileUrl}`);
             widgetState.fileUrl = newFileUrl;
             if (json.rive_layout !== undefined) widgetState.layoutFit = widgetState.layoutOptions[parseInt(json.rive_layout, 10)] || "Contain";
             widgetState.artboardName = "";
@@ -696,6 +738,7 @@
 
       // Initialize if URL is ready but no instance
       if (!widgetState.r && widgetState.fileUrl && widgetState.fileUrl.endsWith(".riv")) {
+        console.log(`[Flow] No Rive instance but URL ready — initializing`);
         initializeRive(widgetState.fileUrl);
         return;
       }
@@ -710,6 +753,7 @@
       if (json.rive_layout !== undefined) {
         const newLayout = widgetState.layoutOptions[parseInt(json.rive_layout, 10)] || "Contain";
         if (newLayout !== widgetState.layoutFit) {
+          console.log(`[Flow] Layout changed ${widgetState.layoutFit} → ${newLayout}, reloading`);
           widgetState.layoutFit = newLayout;
           if (widgetState.r && widgetState.fileUrl) { reloadRive(widgetState.fileUrl); return; }
         }
@@ -724,6 +768,7 @@
           if (artboard) {
             const newArtboard = typeof artboard.name === "function" ? artboard.name() : artboard.name;
             if (newArtboard !== widgetState.artboardName) {
+              console.log(`[Flow] Artboard changed "${widgetState.artboardName}" → "${newArtboard}", reloading`);
               widgetState.artboardName = newArtboard;
               widgetState.stateMachineName = "";
               widgetState.stateMachineIndex = 0;
@@ -740,13 +785,18 @@
           widgetState.stateMachineIndex = smIndex;
           const newName = widgetState.r.stateMachineNames?.[smIndex] ?? "";
           if (newName !== widgetState.stateMachineName) {
+            console.log(`[Flow] SM changed "${widgetState.stateMachineName}" → "${newName}", reloading`);
             widgetState.stateMachineName = newName;
             if (widgetState.fileUrl) { reloadRive(widgetState.fileUrl); return; }
           }
         }
       }
 
-      if (!widgetState.r || !widgetState.riveReady) return;
+      if (!widgetState.r || !widgetState.riveReady) {
+        console.log(`[Flow] Skipping updateDynamicProperties — r=${!!widgetState.r} riveReady=${widgetState.riveReady}`);
+        return;
+      }
+      console.log(`[Flow] updateDynamicProperties`);
       updateDynamicProperties(json);
     }
 
@@ -765,20 +815,34 @@
 
     SingularWidget.init({
       onInit: async (json) => {
+        console.log(`[Init] onInit called renderer=${json.rive_renderer} url=${json.rive_file_url}`);
         widgetState.pendingInitialValues = json;
         const layoutIndex = parseInt(json.rive_layout, 10);
         widgetState.layoutFit = widgetState.layoutOptions?.[layoutIndex] || widgetState.layoutFit || "Contain";
         if (json.show_fps !== undefined) widgetState.displayFpsCounter = json.show_fps;
-        const desiredRuntime = json.rive_renderer ? "webgl2" : "canvas";
-        try {
-          await toggleRiveRuntime(desiredRuntime);
-        } catch (e) {
-          console.warn("[Rive] Failed to load", desiredRuntime, "— falling back to canvas:", e);
-          try { await toggleRiveRuntime("canvas"); } catch {}
+        // Only load the runtime in onInit when rive_renderer is explicitly set.
+        // If it's undefined (Singular fires onInit before values are populated),
+        // skip — onSingularValue will fire moments later with the real value.
+        // Starting a canvas load here when renderer=undefined then races with
+        // onSingularValue's webgl2 load and corrupts widgetState.runtime.
+        if (json.rive_renderer !== undefined) {
+          const desiredRuntime = json.rive_renderer ? "webgl2" : "canvas";
+          try {
+            await toggleRiveRuntime(desiredRuntime);
+            console.log(`[Init] Runtime ready: ${desiredRuntime}`);
+          } catch (e) {
+            console.warn("[Rive] Failed to load", desiredRuntime, "— falling back to canvas:", e);
+            try { await toggleRiveRuntime("canvas"); } catch {}
+          }
+        } else {
+          console.log(`[Init] rive_renderer undefined — skipping runtime load, onSingularValue will handle it`);
         }
         if (typeof json.rive_file_url === "string" && json.rive_file_url.endsWith(".riv")) {
+          console.log(`[Init] Starting initializeRive`);
           widgetState.fileUrl = json.rive_file_url;
           initializeRive(json.rive_file_url);
+        } else {
+          console.warn(`[Init] No valid rive_file_url in onInit:`, json.rive_file_url);
         }
       },
       onValue: onSingularValue,

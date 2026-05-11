@@ -30,7 +30,7 @@
 
     <script>
     // =========================================================================
-    // State — single source of truth
+    // States and configuration
     // =========================================================================
 
     const widgetState = {
@@ -131,10 +131,10 @@
 
     async function fetchAndApplyFont(fieldId) {
       const fontInfo = widgetState.referencedFontAssets[fieldId];
-      if (!fontInfo?.asset) return;
+      if (!fontInfo || !fontInfo.asset) return;
 
       const metricData = widgetState.metricFontData[fieldId];
-      if (!metricData?.family) return;
+      if (!metricData || !metricData.family) return;
 
       const { family, weight = "400" } = metricData;
       const capturedAsset = fontInfo.asset;
@@ -168,7 +168,7 @@
 
       if (!decoded) return;
       try {
-        if (widgetState.referencedFontAssets[fieldId]?.asset !== capturedAsset) {
+        if (!widgetState.referencedFontAssets[fieldId] || widgetState.referencedFontAssets[fieldId].asset !== capturedAsset) {
           console.log(`[Font] Discarding stale font apply for "${fontInfo.assetName}"`);
           return;
         }
@@ -220,8 +220,8 @@
       try {
         const existing = document.getElementById("rive-runtime-script");
         try {
-          existing?.remove();
-          widgetState.r?.cleanup();
+          if (existing) existing.remove();
+          if (widgetState.r) widgetState.r.cleanup();
           delete window.rive;
         } catch {}
 
@@ -256,7 +256,7 @@
       const canvas = document.getElementById("canvas");
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
-      widgetState.r?.resizeDrawingSurfaceToCanvas();
+      if (widgetState.r) widgetState.r.resizeDrawingSurfaceToCanvas();
     }
 
     window.addEventListener("resize", resizeCanvas);
@@ -285,9 +285,9 @@
       const obj = {};
       for (const _p of instance.properties) {
         try {
-          if (_p.type === "string")       obj[_p.name] = instance.string(_p.name)?.value ?? "";
-          else if (_p.type === "number")  obj[_p.name] = instance.number(_p.name)?.value ?? 0;
-          else if (_p.type === "boolean") obj[_p.name] = instance.boolean(_p.name)?.value ?? false;
+          if (_p.type === "string")       obj[_p.name] = instance.string(_p.name) != null ? instance.string(_p.name).value : "";
+          else if (_p.type === "number")  obj[_p.name] = instance.number(_p.name) != null ? instance.number(_p.name).value : 0;
+          else if (_p.type === "boolean") obj[_p.name] = instance.boolean(_p.name) != null ? instance.boolean(_p.name).value : false;
         } catch {}
       }
       return obj;
@@ -325,7 +325,7 @@
           if (_v && _v.properties.some(p => p.type === "list")) { chosenVM = _v; break; }
         }
         if (!chosenVM) chosenVM = defaultVM;
-        const _newInst = chosenVM.defaultInstance() ?? chosenVM.instance();
+        var _newInstDefault = chosenVM.defaultInstance(); const _newInst = _newInstDefault != null ? _newInstDefault : chosenVM.instance();
         if (_newInst) {
           riveInst.bindViewModelInstance(_newInst);
           vmi = _newInst;
@@ -398,7 +398,7 @@
             if (property.type === "enumType" && accessor.values) propData.enumValues = accessor.values;
             if (property.type === "list") {
               propData.addedInstances = [];
-              if ((accessor.length ?? 0) > 0) {
+              if ((accessor.length != null ? accessor.length : 0) > 0) {
                 try {
                   const firstItem = accessor.instanceAt(0);
                   const detected = findVMNameForInstance(firstItem);
@@ -449,7 +449,7 @@
 
     function handleArtboardUpdate(prop, selectedIndex) {
       const index = parseInt(selectedIndex);
-      const file = widgetState.r?.file;
+      const file = widgetState.r ? widgetState.r.file : undefined;
       if (file && index >= 0 && index < file.artboardCount()) {
         const artboardObj = file.artboardByIndex(index);
         if (artboardObj && widgetState.fileUrl) {
@@ -490,17 +490,17 @@
 
       const vmi = widgetState.r.viewModelInstance;
       if (!vmi) return;
-      const listAcc = vmi.list(prop.path) ?? prop.accessor;
-      for (let i = (listAcc.length ?? 0) - 1; i >= 0; i--) { try { listAcc.removeInstanceAt(i); } catch {} }
+      var _listResult = vmi.list(prop.path); const listAcc = _listResult != null ? _listResult : prop.accessor;
+      for (let i = (listAcc.length != null ? listAcc.length : 0) - 1; i >= 0; i--) { try { listAcc.removeInstanceAt(i); } catch {} }
 
       prop.addedInstances = [];
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
-        const vmName = item._vm ?? prop.itemVMName;
+        const vmName = item._vm != null ? item._vm : prop.itemVMName;
         if (!vmName) continue;
         let vm, inst;
         try { vm = widgetState.r.viewModelByName(vmName); } catch {}
-        try { inst = vm?.instance(); } catch {}
+        try { inst = vm ? vm.instance() : undefined; } catch {}
         if (!inst) continue;
         applyPropsToInstance(inst, item);
         try {
@@ -517,7 +517,7 @@
 
     function getAvailableArtboards() {
       const artboards = [];
-      const file = widgetState.r?.file;
+      const file = widgetState.r ? widgetState.r.file : undefined;
       if (!file) return artboards;
       const count = file.artboardCount();
       for (let i = 0; i < count; i++) {
@@ -528,7 +528,7 @@
     }
 
     function getCurrentArtboardIndex(availableArtboards) {
-      const file = widgetState.r?.file;
+      const file = widgetState.r ? widgetState.r.file : undefined;
       if (!file) return 0;
       const defaultArtboard = file.defaultArtboard();
       const defaultName = defaultArtboard ? defaultArtboard.name : null;
@@ -549,7 +549,7 @@
     }
 
     function addStateMachineField(fields) {
-      const names = widgetState.r?.stateMachineNames;
+      const names = widgetState.r ? widgetState.r.stateMachineNames : undefined;
       if (!names || names.length === 0) return;
       fields.push({
         id: "rivestatemachineselect", type: "selection", title: "State Machine",
@@ -599,11 +599,11 @@
 
     function buildListDefaultValue(prop) {
       const items = [];
-      for (let i = 0; i < (prop.accessor.length ?? 0); i++) {
+      for (let i = 0; i < (prop.accessor.length != null ? prop.accessor.length : 0); i++) {
         try {
           const item = prop.accessor.instanceAt(i);
           if (item) {
-            const vmName = widgetState._findVMNameForInstance?.(item) ?? prop.itemVMName;
+            var _fnResult = widgetState._findVMNameForInstance ? widgetState._findVMNameForInstance(item) : null; const vmName = _fnResult != null ? _fnResult : prop.itemVMName;
             if (vmName && !prop.itemVMName) prop.itemVMName = vmName;
             items.push({ ...readInstanceProperties(item) });
           }
@@ -617,14 +617,14 @@
 
       switch (prop.type) {
         case "trigger":  fieldType = "button"; break;
-        case "string":   fieldType = "text";     defaultValue = prop.accessor.value ?? ""; break;
-        case "number":   fieldType = "number";   defaultValue = prop.accessor.value ?? 0; break;
-        case "boolean":  fieldType = "checkbox"; defaultValue = prop.accessor.value ?? false; break;
+        case "string":   fieldType = "text";     defaultValue = prop.accessor.value != null ? prop.accessor.value : ""; break;
+        case "number":   fieldType = "number";   defaultValue = prop.accessor.value != null ? prop.accessor.value : 0; break;
+        case "boolean":  fieldType = "checkbox"; defaultValue = prop.accessor.value != null ? prop.accessor.value : false; break;
         case "image":    fieldType = "image"; break;
         case "color":    defaultValue = riveColorValueToRGBA(prop.accessor.value); break;
         case "enumType":
-          fieldType = "selection"; defaultValue = (prop.accessor.value ?? 0).toString();
-          if (prop.enumValues?.length) selections = prop.enumValues.map((v, i) => ({ id: i.toString(), title: v }));
+          fieldType = "selection"; defaultValue = (prop.accessor.value != null ? prop.accessor.value : 0).toString();
+          if (prop.enumValues && prop.enumValues.length) selections = prop.enumValues.map((v, i) => ({ id: i.toString(), title: v }));
           break;
         case "artboard":
           fieldType = "selection";
@@ -648,7 +648,7 @@
 
       if (availableArtboards.length > 0) {
         const childIds = ["riveartboard"];
-        if (widgetState.r?.stateMachineNames?.length > 0) childIds.push("rivestatemachineselect");
+        if (widgetState.r && widgetState.r.stateMachineNames && widgetState.r.stateMachineNames.length > 0) childIds.push("rivestatemachineselect");
         groups.push({ id: "artboardgroup", title: "Artboard Selection", width: "double", toolTip: "Select the artboard to display", childIds });
       }
 
@@ -656,16 +656,16 @@
         const groupInfo = viewModelParentInfo[groupKey];
         let groupTitle = groupKey, vmName = groupKey;
 
-        if (groupInfo?.parentProp) {
+        if (groupInfo && groupInfo.parentProp) {
           vmName = groupInfo.vmName;
           const cleanParentProp = groupInfo.parentProp.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-          if (widgetState.vmMetadata?.[groupInfo.parentProp]) {
+          if (widgetState.vmMetadata && widgetState.vmMetadata[groupInfo.parentProp]) {
             const parentVMName = widgetState.vmMetadata[groupInfo.parentProp].parentVMName || "Main";
             groupTitle = `${parentVMName} (${cleanParentProp}: ${vmName})`;
           } else {
             groupTitle = `${vmName} - ${cleanParentProp}`;
           }
-        } else if (groupInfo?.vmName) {
+        } else if (groupInfo && groupInfo.vmName) {
           vmName = groupInfo.vmName;
           groupTitle = vmName;
         }
@@ -739,7 +739,7 @@
 
     function initializeRive(fileUrl) {
       widgetState.riveReady = false;
-      const loadGen = (widgetState._loadGen = (widgetState._loadGen ?? 0) + 1);
+      const loadGen = (widgetState._loadGen = (widgetState._loadGen != null ? widgetState._loadGen : 0) + 1);
       console.log(`[Rive] initializeRive gen=${loadGen} runtime=${widgetState.runtime} artboard="${widgetState.artboardName}" sm="${widgetState.stateMachineName}" url=${fileUrl}`);
 
       // Watchdog: if onLoad never fires within 5s, retry once
@@ -762,7 +762,7 @@
         assetLoader: (asset, bytes) => {
           try {
             // Let Rive handle hosted (CDN) and embedded assets
-            if ((asset.cdnUuid?.length ?? 0) > 0 || (bytes?.length ?? 0) > 0) return false;
+            if ((asset.cdnUuid != null ? asset.cdnUuid.length : 0) > 0 || (bytes != null ? bytes.length : 0) > 0) return false;
 
             if (asset.isFont) {
               const fieldId = fontAssetFieldId(asset.name);
@@ -783,7 +783,7 @@
 
         onLoad: () => {
           clearTimeout(watchdog);
-          console.log(`[Rive] onLoad fired gen=${loadGen} (active gen=${widgetState._loadGen}) sm names=${JSON.stringify(widgetState.r?.stateMachineNames)}`);
+          console.log(`[Rive] onLoad fired gen=${loadGen} (active gen=${widgetState._loadGen}) sm names=${JSON.stringify(widgetState.r ? widgetState.r.stateMachineNames : undefined)}`); 
           resizeCanvas();
 
           const vmData = getAllViewModelProperties(widgetState.r);
@@ -824,7 +824,7 @@
 
       if (widgetState.artboardName) riveConfig.artboard = widgetState.artboardName;
       if (widgetState.stateMachineName) riveConfig.stateMachines = widgetState.stateMachineName;
-      console.log(`[Rive] new rive.Rive() with artboard="${riveConfig.artboard ?? '(default)'}" stateMachines="${riveConfig.stateMachines ?? '(none)'}" useOffscreenRenderer=${!!riveConfig.useOffscreenRenderer}`);
+      console.log(`[Rive] new rive.Rive() with artboard="${riveConfig.artboard != null ? riveConfig.artboard : '(default)'}" stateMachines="${riveConfig.stateMachines != null ? riveConfig.stateMachines : '(none)'}" useOffscreenRenderer=${!!riveConfig.useOffscreenRenderer}`);
       widgetState.r = new rive.Rive(riveConfig);
     }
 
@@ -864,20 +864,18 @@
       widgetState.pendingInitialValues = widgetState.pendingInitialValues
         ? { ...widgetState.pendingInitialValues, ...json } : json;
 
-      // Parse and store referenced font values immediately — before any early returns —
-      // so that riveAssetLoader always has the latest font data when loading begins.
       // rivefont* keys are removed from pendingInitialValues once consumed so that
       // the deferred onSingularValue call after each reload does NOT re-trigger
       // another reload (which would otherwise create an infinite loop).
       let fontDataChanged = false;
       for (const [key, value] of Object.entries(json)) {
         if (!key.startsWith("rivefont")) continue;
-        const fontData = value?.fontData ?? value;
-        if (!fontData?.family) continue;
+        var _fontDataRaw = value != null ? value.fontData : undefined; const fontData = _fontDataRaw != null ? _fontDataRaw : value;
+        if (!fontData || !fontData.family) continue;
         const incoming = {
           family: fontData.family,
-          weight: String(fontData.weight ?? "400"),
-          subset: fontData.subset ?? "auto",
+          weight: String(fontData.weight != null ? fontData.weight : "400"),
+          subset: fontData.subset != null ? fontData.subset : "auto",
         };
         const existing = widgetState.metricFontData[key];
         const changed = !existing ||
@@ -947,7 +945,7 @@
       // Artboard change
       if (json.riveartboard !== undefined && widgetState.r) {
         const artboardIndex = parseInt(json.riveartboard);
-        const file = widgetState.r?.file;
+        const file = widgetState.r ? widgetState.r.file : undefined;
         if (file && artboardIndex >= 0 && artboardIndex < file.artboardCount()) {
           const artboard = file.artboardByIndex(artboardIndex);
           if (artboard) {
@@ -968,7 +966,7 @@
         const smIndex = parseInt(json.rivestatemachineselect);
         if (!isNaN(smIndex) && smIndex >= 0) {
           widgetState.stateMachineIndex = smIndex;
-          const newName = widgetState.r.stateMachineNames?.[smIndex] ?? "";
+          var _smArr = widgetState.r.stateMachineNames; var _smVal = _smArr != null ? _smArr[smIndex] : undefined; const newName = _smVal != null ? _smVal : "";
           if (newName !== widgetState.stateMachineName) {
             console.log(`[Flow] SM changed "${widgetState.stateMachineName}" → "${newName}", reloading`);
             widgetState.stateMachineName = newName;
@@ -987,7 +985,7 @@
 
     function onSingularButtonClicked(action) {
       for (const [name, prop] of Object.entries(widgetState.riveProps)) {
-        if (toAlphanumericId(name) === action && prop?.type === "trigger") {
+        if (toAlphanumericId(name) === action && prop && prop.type === "trigger") {
           prop.accessor.trigger();
           return;
         }
@@ -1003,13 +1001,8 @@
         console.log(`[Init] onInit called renderer=${json.rive_renderer} url=${json.rive_file_url}`);
         widgetState.pendingInitialValues = json;
         const layoutIndex = parseInt(json.rive_layout, 10);
-        widgetState.layoutFit = widgetState.layoutOptions?.[layoutIndex] || widgetState.layoutFit || "Contain";
+        widgetState.layoutFit = (widgetState.layoutOptions && widgetState.layoutOptions[layoutIndex]) || widgetState.layoutFit || "Contain";
         if (json.show_fps !== undefined) widgetState.displayFpsCounter = json.show_fps;
-        // Only load the runtime in onInit when rive_renderer is explicitly set.
-        // If it's undefined (Singular fires onInit before values are populated),
-        // skip — onSingularValue will fire moments later with the real value.
-        // Starting a canvas load here when renderer=undefined then races with
-        // onSingularValue's webgl2 load and corrupts widgetState.runtime.
         if (json.rive_renderer !== undefined) {
           const desiredRuntime = json.rive_renderer ? "webgl2" : "canvas";
           try {

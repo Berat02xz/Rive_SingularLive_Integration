@@ -41,6 +41,7 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 
 ### V5
 - Singular MetricFonts -> Rive Font support (Google Fonts Selection)
+- CEF 75 Compatibility support for enterprise software
 
 ---
 

@@ -48,13 +48,15 @@
       vmMetadata: {},
       defaultVMName: "",
       _findVMNameForInstance: null,
+      referencedFontAssets: {},  // fieldId → { asset, assetName }
+      metricFontData: {},        // fieldId → { family, weight, subset }
 
       layoutOptions: [
         "Contain", "Cover", "Fill", "FitWidth", "FitHeight", "ScaleDown", "Layout", "None",
       ],
       runtimeSources: {
-        webgl2: "https://unpkg.com/@rive-app/webgl2",
-        canvas: "https://unpkg.com/@rive-app/canvas",
+        webgl2: "https://unpkg.com/@rive-app/webgl2@2.37.5/rive.js",
+        canvas: "https://unpkg.com/@rive-app/canvas@2.37.5/rive.js",
       },
     };
 
@@ -73,6 +75,110 @@
         b: colorValue & 0xff,
         a: ((colorValue >> 24) & 0xff) / 255,
       };
+    }
+
+    // =========================================================================
+    // Font loading — Google Fonts TTF via GitHub raw → Rive decodeFont / setFont
+    // =========================================================================
+
+    const FONT_FALLBACK_URL = "https://cdn.rive.app/runtime/flutter/inter.ttf";
+
+    // Weight number → static TTF style-name suffix used in the Google Fonts GitHub repo
+    const WEIGHT_TO_STYLE_NAME = {
+      "100": "Thin", "200": "ExtraLight", "300": "Light",
+      "400": "Regular", "500": "Medium", "600": "SemiBold",
+      "700": "Bold", "800": "ExtraBold", "900": "Black",
+    };
+
+    function fontAssetFieldId(assetName) {
+      const base = assetName.replace(/\.[^.]+$/, "");
+      return "rivefont" + base.replace(/[^a-zA-Z0-9]/g, "");
+    }
+
+    function parseFontFamilyFromAsset(assetName) {
+      let name = assetName.replace(/\.[^.]+$/, "").replace(/\[.*?\]/g, "").trim();
+      const lastDash = name.lastIndexOf("-");
+      const familyPart = lastDash > 0 ? name.substring(0, lastDash) : name;
+      return familyPart.replace(/([A-Z])/g, " $1").trim().replace(/\s+/g, " ");
+    }
+
+    async function fetchGoogleFontBytes(family, weight) {
+      const styleName = WEIGHT_TO_STYLE_NAME[String(weight)] || "Regular";
+      // Strip spaces for the CamelCase filename, lowercase+no-spaces for the folder name
+      const familyCamel = family.replace(/\s+/g, "");
+      const fontId    = family.toLowerCase().replace(/\s+/g, "");
+
+      // Google Fonts GitHub raw — CORS-friendly, returns TTF.
+      // License folder is usually ofl or apache; variable fonts keep statics in static/.
+      const BASE = "https://raw.githubusercontent.com/google/fonts/main";
+      const candidates = ["ofl", "apache", "ufl"].flatMap((lic) => [
+        `${BASE}/${lic}/${fontId}/${familyCamel}-${styleName}.ttf`,
+        `${BASE}/${lic}/${fontId}/static/${familyCamel}-${styleName}.ttf`,
+      ]);
+
+      for (const url of candidates) {
+        try {
+          const res = await fetch(url);
+          if (res.ok) {
+            console.log(`[Font] Fetched TTF from ${url}`);
+            return new Uint8Array(await res.arrayBuffer());
+          }
+        } catch { /* try next candidate */ }
+      }
+
+      throw new Error(`No TTF found on Google Fonts GitHub for "${family}" wght ${weight}`);
+    }
+
+    async function fetchAndApplyFont(fieldId) {
+      const fontInfo = widgetState.referencedFontAssets[fieldId];
+      if (!fontInfo?.asset) return;
+
+      const metricData = widgetState.metricFontData[fieldId];
+      if (!metricData?.family) return;
+
+      const { family, weight = "400" } = metricData;
+      const capturedAsset = fontInfo.asset;
+      console.log(`[Font] Loading "${family}" wght ${weight} for asset "${fontInfo.assetName}"`);
+
+      let bytes;
+      try {
+        bytes = await fetchGoogleFontBytes(family, weight);
+      } catch (err) {
+        console.warn(
+          `[Font] Primary load failed for "${family}" wght ${weight} — falling back to Inter:`,
+          err
+        );
+        try {
+          bytes = new Uint8Array(
+            await fetch(FONT_FALLBACK_URL).then((r) => r.arrayBuffer())
+          );
+        } catch (fbErr) {
+          console.error("[Font] Fallback font also failed:", fbErr);
+          return;
+        }
+      }
+
+      let decoded = null;
+      try {
+        decoded = await window.rive.decodeFont(bytes);
+      } catch (err) {
+        console.error(`[Font] decodeFont failed for "${fontInfo.assetName}":`, err);
+        return;
+      }
+
+      if (!decoded) return;
+      try {
+        if (widgetState.referencedFontAssets[fieldId]?.asset !== capturedAsset) {
+          console.log(`[Font] Discarding stale font apply for "${fontInfo.assetName}"`);
+          return;
+        }
+        capturedAsset.setFont(decoded);
+        console.log(`[Font] setFont OK → "${fontInfo.assetName}"`);
+      } catch (err) {
+        console.error(`[Font] setFont failed for "${fontInfo.assetName}":`, err);
+      } finally {
+        decoded.unref();
+      }
     }
 
     // =========================================================================
@@ -569,6 +675,32 @@
       return groups;
     }
 
+    function addReferencedFontFields(fields, groups) {
+      const fontAssets = Object.values(widgetState.referencedFontAssets);
+      if (fontAssets.length === 0) return;
+
+      const fontFieldIds = [];
+      for (const { fieldId, assetName } of fontAssets) {
+        const displayName = assetName.replace(/\.[^.]+$/, "");
+        const stored = widgetState.metricFontData[fieldId];
+        const defaultValue = stored
+          ? { fontData: stored }
+          : { fontData: { family: parseFontFamilyFromAsset(assetName), weight: "400", subset: "auto" } };
+
+        fields.push({ id: fieldId, type: "metricfont", title: displayName, defaultValue });
+        fontFieldIds.push(fieldId);
+      }
+
+      groups.push({
+        id: "rivefontgroup",
+        title: "Fonts",
+        width: "double",
+        toolTip: "Font overrides for referenced text assets in the Rive file",
+        activeId: "",
+        childIds: fontFieldIds,
+      });
+    }
+
     function generateUIModel() {
       const fields = [];
       const groupedProperties = {};
@@ -595,6 +727,7 @@
       }
 
       const groups = buildGroups(availableArtboards, groupedProperties, viewModelParentInfo);
+      addReferencedFontFields(fields, groups);
       const uiModel = { fields, groups };
       console.log("Sending UI Model to Singular:", JSON.stringify(uiModel, null, 2));
       SingularWidget.setCustomWidgetUI(uiModel);
@@ -625,6 +758,28 @@
         ...(widgetState.runtime === "webgl2" ? { useOffscreenRenderer: true } : {}),
         layout: new rive.Layout({ fit: rive.Fit[widgetState.layoutFit] }),
         enableFPSCounter: true,
+
+        assetLoader: (asset, bytes) => {
+          try {
+            // Let Rive handle hosted (CDN) and embedded assets
+            if ((asset.cdnUuid?.length ?? 0) > 0 || (bytes?.length ?? 0) > 0) return false;
+
+            if (asset.isFont) {
+              const fieldId = fontAssetFieldId(asset.name);
+              widgetState.referencedFontAssets[fieldId] = {
+                asset,
+                assetName: asset.name,
+                fieldId,
+              };
+              // Start fetching immediately if font data is already available
+              fetchAndApplyFont(fieldId);
+              return true;
+            }
+          } catch (err) {
+            console.error("[assetLoader] Unexpected error, letting runtime handle asset:", err);
+          }
+          return false;
+        },
 
         onLoad: () => {
           clearTimeout(watchdog);
@@ -676,6 +831,7 @@
     function reloadRive(fileUrl) {
       console.log(`[Rive] reloadRive — cleaning up and reinitializing`);
       document.getElementById("canvas").classList.remove("ready");
+      widgetState.referencedFontAssets = {};
       if (widgetState.r) { try { widgetState.r.cleanup(); } catch {} widgetState.r = null; }
       initializeRive(fileUrl);
     }
@@ -707,6 +863,35 @@
     async function onSingularValue(json) {
       widgetState.pendingInitialValues = widgetState.pendingInitialValues
         ? { ...widgetState.pendingInitialValues, ...json } : json;
+
+      // Parse and store referenced font values immediately — before any early returns —
+      // so that riveAssetLoader always has the latest font data when loading begins.
+      // rivefont* keys are removed from pendingInitialValues once consumed so that
+      // the deferred onSingularValue call after each reload does NOT re-trigger
+      // another reload (which would otherwise create an infinite loop).
+      let fontDataChanged = false;
+      for (const [key, value] of Object.entries(json)) {
+        if (!key.startsWith("rivefont")) continue;
+        const fontData = value?.fontData ?? value;
+        if (!fontData?.family) continue;
+        const incoming = {
+          family: fontData.family,
+          weight: String(fontData.weight ?? "400"),
+          subset: fontData.subset ?? "auto",
+        };
+        const existing = widgetState.metricFontData[key];
+        const changed = !existing ||
+          existing.family !== incoming.family ||
+          existing.weight !== incoming.weight;
+        widgetState.metricFontData[key] = incoming;
+        if (changed && widgetState.referencedFontAssets[key]) fontDataChanged = true;
+        if (widgetState.pendingInitialValues) delete widgetState.pendingInitialValues[key];
+      }
+      // Font changes require a full Rive reload so assetLoader re-supplies new font bytes
+      if (fontDataChanged && widgetState.fileUrl) {
+        reloadRive(widgetState.fileUrl);
+        return;
+      }
 
       // Runtime change
       if (json.rive_renderer !== undefined) {

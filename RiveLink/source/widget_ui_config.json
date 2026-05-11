@@ -28,7 +28,7 @@
         "id": "rive_renderer",
         "type": "checkbox",
         "title": "Rive Renderer",
-        "defaultValue": true
+        "defaultValue": false
       },
       {
         "id": "show_fps",

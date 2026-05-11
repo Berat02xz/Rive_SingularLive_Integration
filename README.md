@@ -36,8 +36,11 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 - Startup flicker removal
 - Rive list → Singular table support
 
-### V4 Planned
-- Font change via Google Fonts from Singular Live *(heavy experimental phase)*
+### V4 Released
+- Locked on 2.37.5 rive runtime version
+
+### V5
+- Singular MetricFonts -> Rive Font support (Google Fonts Selection)
 
 ---
 

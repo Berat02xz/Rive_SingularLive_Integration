@@ -102,14 +102,38 @@
       return familyPart.replace(/([A-Z])/g, " $1").trim().replace(/\s+/g, " ");
     }
 
-    async function fetchGoogleFontBytes(family, weight) {
-      const styleName = WEIGHT_TO_STYLE_NAME[String(weight)] || "Regular";
-      // Strip spaces for the CamelCase filename, lowercase+no-spaces for the folder name
-      const familyCamel = family.replace(/\s+/g, "");
-      const fontId    = family.toLowerCase().replace(/\s+/g, "");
+    const GFKey = "AIzaSyBMre41OpN9ISDJQaZFMp6YmyhlUJV8MfE";
 
-      // Google Fonts GitHub raw — CORS-friendly, returns TTF.
-      // License folder is usually ofl or apache; variable fonts keep statics in static/.
+    async function fetchGoogleFontBytes(family, weight) {
+      const weightStr = String(weight);
+
+      // Method 1: Google Fonts API
+      try {
+        const apiUrl = `https://www.googleapis.com/webfonts/v1/webfonts?key=${GFKey}&family=${encodeURIComponent(family)}`;
+        const res = await fetch(apiUrl);
+        if (res.ok) {
+          const data = await res.json();
+          const item = data.items && data.items[0];
+          if (item && item.files) {
+            const weightKey = weightStr === "400" ? "regular" : weightStr;
+            const fontUrl = item.files[weightKey] || item.files["regular"];
+            if (fontUrl) {
+              const fontRes = await fetch(fontUrl);
+              if (fontRes.ok) {
+                console.log(`[Font] Method: Google Fonts API — "${family}" wght ${weightStr}`);
+                return new Uint8Array(await fontRes.arrayBuffer());
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`[Font] Google Fonts API failed for "${family}" wght ${weightStr}, trying GitHub:`, err);
+      }
+
+      // Method 2: GitHub raw fallback
+      const styleName = WEIGHT_TO_STYLE_NAME[weightStr] || "Regular";
+      const familyCamel = family.replace(/\s+/g, "");
+      const fontId = family.toLowerCase().replace(/\s+/g, "");
       const BASE = "https://raw.githubusercontent.com/google/fonts/main";
       const candidates = ["ofl", "apache", "ufl"].flatMap((lic) => [
         `${BASE}/${lic}/${fontId}/${familyCamel}-${styleName}.ttf`,
@@ -120,13 +144,13 @@
         try {
           const res = await fetch(url);
           if (res.ok) {
-            console.log(`[Font] Fetched TTF from ${url}`);
+            console.log(`[Font] Method: GitHub fallback — "${family}" wght ${weightStr}`);
             return new Uint8Array(await res.arrayBuffer());
           }
         } catch { /* try next candidate */ }
       }
 
-      throw new Error(`No TTF found on Google Fonts GitHub for "${family}" wght ${weight}`);
+      throw new Error(`No TTF found for "${family}" wght ${weightStr} via API or GitHub`);
     }
 
     async function fetchAndApplyFont(fieldId) {

@@ -288,6 +288,17 @@
           if (_p.type === "string")       obj[_p.name] = instance.string(_p.name) != null ? instance.string(_p.name).value : "";
           else if (_p.type === "number")  obj[_p.name] = instance.number(_p.name) != null ? instance.number(_p.name).value : 0;
           else if (_p.type === "boolean") obj[_p.name] = instance.boolean(_p.name) != null ? instance.boolean(_p.name).value : false;
+          else if (_p.type === "color") {
+            const colorAcc = instance.color(_p.name);
+            if (colorAcc != null) {
+              const rgba = riveColorValueToRGBA(colorAcc.value);
+              const r = Math.round(rgba.r).toString(16).padStart(2, "0");
+              const g = Math.round(rgba.g).toString(16).padStart(2, "0");
+              const b = Math.round(rgba.b).toString(16).padStart(2, "0");
+              obj[_p.name] = `#${r}${g}${b}`;
+            }
+          }
+          else if (_p.type === "image") { obj[_p.name] = ""; }
         } catch {}
       }
       return obj;
@@ -298,9 +309,49 @@
         if (key.startsWith('_')) continue;
         const val = itemData[key];
         try {
-          if (typeof val === 'string')       { const a = inst.string(key);  if (a) a.value = val; }
-          else if (typeof val === 'number')  { const a = inst.number(key);  if (a) a.value = val; }
-          else if (typeof val === 'boolean') { const a = inst.boolean(key); if (a) a.value = val; }
+          if (typeof val === 'boolean') {
+            const a = inst.boolean(key); if (a) a.value = val;
+          } else if (typeof val === 'number') {
+            const a = inst.number(key); if (a) a.value = val;
+          } else if (typeof val === 'string') {
+            const strAcc = inst.string(key);
+            if (strAcc) { strAcc.value = val; continue; }
+            // Hex color string (#rrggbb or #rrggbbaa)
+            if (val.startsWith('#')) {
+              const colorAcc = inst.color(key);
+              if (colorAcc) {
+                const hex = val.replace('#', '');
+                colorAcc.rgba(
+                  parseInt(hex.substring(0, 2), 16), parseInt(hex.substring(2, 4), 16),
+                  parseInt(hex.substring(4, 6), 16), hex.length === 8 ? parseInt(hex.substring(6, 8), 16) : 255
+                );
+                continue;
+              }
+            }
+            // Image URL
+            if (val) {
+              const imgAcc = inst.image(key);
+              if (imgAcc) {
+                (async () => {
+                  try {
+                    let imageUrl = val;
+                    if (imageUrl.startsWith("//")) imageUrl = "https:" + imageUrl;
+                    else if (!imageUrl.startsWith("http://") && !imageUrl.startsWith("https://") && !imageUrl.startsWith("data:")) imageUrl = "https://" + imageUrl;
+                    const res = await fetch(imageUrl);
+                    const image = await window.rive.decodeImage(new Uint8Array(await res.arrayBuffer()));
+                    imgAcc.value = image;
+                  } catch (err) { console.error(`Failed to load image for list item key "${key}":`, err); }
+                })();
+              }
+            }
+          } else if (val && typeof val === 'object' && 'r' in val) {
+            // RGBA color object
+            const colorAcc = inst.color(key);
+            if (colorAcc) colorAcc.rgba(
+              Math.round(val.r), Math.round(val.g), Math.round(val.b),
+              val.a !== undefined ? Math.round(val.a * 255) : 255
+            );
+          }
         } catch {}
       }
     }

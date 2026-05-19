@@ -533,6 +533,10 @@
     }
 
     function handleListUpdate(prop, rawData) {
+      const rawStr = typeof rawData === 'string' ? rawData : JSON.stringify(rawData);
+      if (prop._lastListData === rawStr) return;
+      prop._lastListData = rawStr;
+
       let items;
       try {
         const parsed = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
@@ -542,10 +546,22 @@
       const vmi = widgetState.r.viewModelInstance;
       if (!vmi) return;
       var _listResult = vmi.list(prop.path); const listAcc = _listResult != null ? _listResult : prop.accessor;
-      for (let i = (listAcc.length != null ? listAcc.length : 0) - 1; i >= 0; i--) { try { listAcc.removeInstanceAt(i); } catch {} }
+      const currentLength = listAcc.length != null ? listAcc.length : 0;
+      const newLength = items.length;
 
-      prop.addedInstances = [];
-      for (let i = 0; i < items.length; i++) {
+      // Update existing instances in place — animations keep running
+      for (let i = 0; i < Math.min(currentLength, newLength); i++) {
+        try { applyPropsToInstance(listAcc.instanceAt(i), items[i]); } catch {}
+      }
+
+      // Remove instances from the end if count decreased
+      for (let i = currentLength - 1; i >= newLength; i--) {
+        try { listAcc.removeInstanceAt(i); } catch {}
+      }
+
+      // Add new instances at the end if count increased
+      if (!prop.addedInstances) prop.addedInstances = [];
+      for (let i = currentLength; i < newLength; i++) {
         const item = items[i];
         const vmName = item._vm != null ? item._vm : prop.itemVMName;
         if (!vmName) continue;
@@ -834,7 +850,7 @@
 
         onLoad: () => {
           clearTimeout(watchdog);
-          console.log(`[Rive] onLoad fired gen=${loadGen} (active gen=${widgetState._loadGen}) sm names=${JSON.stringify(widgetState.r ? widgetState.r.stateMachineNames : undefined)}`); 
+          console.log(`[Rive] onLoad fired gen=${loadGen} (active gen=${widgetState._loadGen}) sm names=${JSON.stringify(widgetState.r ? widgetState.r.stateMachineNames : undefined)}`);
           resizeCanvas();
 
           const vmData = getAllViewModelProperties(widgetState.r);

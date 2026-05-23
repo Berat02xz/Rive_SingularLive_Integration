@@ -120,15 +120,12 @@
             if (fontUrl) {
               const fontRes = await fetch(fontUrl);
               if (fontRes.ok) {
-                console.log(`[Font] Method: Google Fonts API — "${family}" wght ${weightStr}`);
                 return new Uint8Array(await fontRes.arrayBuffer());
               }
             }
           }
         }
-      } catch (err) {
-        console.warn(`[Font] Google Fonts API failed for "${family}" wght ${weightStr}, trying GitHub:`, err);
-      }
+      } catch { }
 
       // Method 2: GitHub raw fallback
       const styleName = WEIGHT_TO_STYLE_NAME[weightStr] || "Regular";
@@ -144,7 +141,6 @@
         try {
           const res = await fetch(url);
           if (res.ok) {
-            console.log(`[Font] Method: GitHub fallback — "${family}" wght ${weightStr}`);
             return new Uint8Array(await res.arrayBuffer());
           }
         } catch { /* try next candidate */ }
@@ -162,22 +158,16 @@
 
       const { family, weight = "400" } = metricData;
       const capturedAsset = fontInfo.asset;
-      console.log(`[Font] Loading "${family}" wght ${weight} for asset "${fontInfo.assetName}"`);
 
       let bytes;
       try {
         bytes = await fetchGoogleFontBytes(family, weight);
-      } catch (err) {
-        console.warn(
-          `[Font] Primary load failed for "${family}" wght ${weight} — falling back to Inter:`,
-          err
-        );
+      } catch {
         try {
           bytes = new Uint8Array(
             await fetch(FONT_FALLBACK_URL).then((r) => r.arrayBuffer())
           );
-        } catch (fbErr) {
-          console.error("[Font] Fallback font also failed:", fbErr);
+        } catch {
           return;
         }
       }
@@ -185,22 +175,17 @@
       let decoded = null;
       try {
         decoded = await window.rive.decodeFont(bytes);
-      } catch (err) {
-        console.error(`[Font] decodeFont failed for "${fontInfo.assetName}":`, err);
+      } catch {
         return;
       }
 
       if (!decoded) return;
       try {
         if (!widgetState.referencedFontAssets[fieldId] || widgetState.referencedFontAssets[fieldId].asset !== capturedAsset) {
-          console.log(`[Font] Discarding stale font apply for "${fontInfo.assetName}"`);
           return;
         }
         capturedAsset.setFont(decoded);
-        console.log(`[Font] setFont OK → "${fontInfo.assetName}"`);
-      } catch (err) {
-        console.error(`[Font] setFont failed for "${fontInfo.assetName}":`, err);
-      } finally {
+      } catch { } finally {
         decoded.unref();
       }
     }
@@ -233,10 +218,8 @@
       }
 
       if (widgetState.runtime === desiredRuntime && window.rive) {
-        console.log(`[Runtime] Already on ${desiredRuntime}, skipping toggle`);
         return;
       }
-      console.log(`[Runtime] Switching to ${desiredRuntime} (was: ${widgetState.runtime || 'none'})`);
 
       let switchResolve;
       widgetState._runtimeSwitching = new Promise(r => { switchResolve = r; });
@@ -256,10 +239,8 @@
 
         await new Promise((resolve, reject) => {
           script.onload = async () => {
-            console.log(`[Runtime] Script loaded for ${desiredRuntime}, waiting for Rive global...`);
             try {
               await waitForRiveGlobal();
-              console.log(`[Runtime] Rive global ready for ${desiredRuntime}`);
               widgetState.runtime = desiredRuntime;
               resolve();
             } catch (e) { reject(e); }
@@ -364,7 +345,7 @@
                     const res = await fetch(imageUrl);
                     const image = await window.rive.decodeImage(new Uint8Array(await res.arrayBuffer()));
                     imgAcc.value = image;
-                  } catch (err) { console.error(`Failed to load image for list item key "${key}":`, err); }
+                  } catch { }
                 })();
               }
             }
@@ -463,9 +444,7 @@
               case "list":     accessor = vmi.list(propertyPath);     break;
               default: break;
             }
-          } catch (err) {
-            console.error("Error mapping: " + propertyPath + " " + err.message);
-          }
+          } catch { }
 
           if (accessor) {
             const propKey = propertyPath.replace(/\//g, "_");
@@ -510,7 +489,7 @@
           const res = await fetch(imageUrl);
           const image = await window.rive.decodeImage(new Uint8Array(await res.arrayBuffer()));
           prop.accessor.value = image;
-        } catch (error) { console.error(`Failed to load image ${name}:`, error); }
+        } catch { }
       })();
     }
 
@@ -533,7 +512,7 @@
             src: widgetState.fileUrl,
             onLoad: () => {
               try { const ab = riveFile.getArtboard(artboardName); if (ab) prop.accessor.value = ab; }
-              catch (err) { console.error(`Failed to get artboard ${artboardName}:`, err); }
+              catch { }
             },
           });
           riveFile.init();
@@ -573,14 +552,35 @@
       const currentLength = listAcc.length != null ? listAcc.length : 0;
       const newLength = items.length;
 
-      // Update existing instances in place — animations keep running
-      for (let i = 0; i < Math.min(currentLength, newLength); i++) {
-        try { applyPropsToInstance(listAcc.instanceAt(i), items[i]); } catch {}
+      // instanceMap tracks logical-index → instance reference so that updates
+      // always target the correct instance regardless of how the Rive sort
+      // script has reordered the list via swap(). Without this, a mid-loop
+      // sort triggered by a stat change would shift items under the loop
+      // cursor, causing some instances to be written twice and others skipped.
+      if (!prop.instanceMap) prop.instanceMap = new Map();
+
+      // Snapshot instance references at their current logical positions before
+      // any writes (which may trigger sort-induced reorders mid-loop).
+      const existingInstances = [];
+      for (let i = 0; i < currentLength; i++) {
+        try { existingInstances[i] = listAcc.instanceAt(i); } catch {}
+      }
+
+      // Update existing instances by reference — sort order in the Rive list
+      // is irrelevant because we hold direct instance refs from instanceMap.
+      const keepCount = Math.min(currentLength, newLength);
+      for (let i = 0; i < keepCount; i++) {
+        const inst = prop.instanceMap.has(i) ? prop.instanceMap.get(i) : existingInstances[i];
+        if (inst) {
+          try { applyPropsToInstance(inst, items[i]); } catch {}
+          prop.instanceMap.set(i, inst);
+        }
       }
 
       // Remove instances from the end if count decreased
       for (let i = currentLength - 1; i >= newLength; i--) {
         try { listAcc.removeInstanceAt(i); } catch {}
+        prop.instanceMap.delete(i);
       }
 
       // Add new instances at the end if count increased
@@ -597,7 +597,7 @@
         try {
           listAcc.addInstance(inst);
           prop.addedInstances.push(inst);
-          applyPropsToInstance(listAcc.instanceAt(i), item);
+          prop.instanceMap.set(i, inst);
         } catch {}
       }
     }
@@ -831,12 +831,10 @@
     function initializeRive(fileUrl) {
       widgetState.riveReady = false;
       const loadGen = (widgetState._loadGen = (widgetState._loadGen != null ? widgetState._loadGen : 0) + 1);
-      console.log(`[Rive] initializeRive gen=${loadGen} runtime=${widgetState.runtime} artboard="${widgetState.artboardName}" sm="${widgetState.stateMachineName}" url=${fileUrl}`);
 
       // Watchdog: if onLoad never fires within 5s, retry once
       const watchdog = setTimeout(() => {
         if (!widgetState.riveReady && widgetState._loadGen === loadGen) {
-          console.warn(`[Rive] Watchdog fired gen=${loadGen} — onLoad never fired, retrying`);
           reloadRive(widgetState.fileUrl);
         }
       }, 5000);
@@ -866,15 +864,12 @@
               fetchAndApplyFont(fieldId);
               return true;
             }
-          } catch (err) {
-            console.error("[assetLoader] Unexpected error, letting runtime handle asset:", err);
-          }
+          } catch { }
           return false;
         },
 
         onLoad: () => {
           clearTimeout(watchdog);
-          console.log(`[Rive] onLoad fired gen=${loadGen} (active gen=${widgetState._loadGen}) sm names=${JSON.stringify(widgetState.r ? widgetState.r.stateMachineNames : undefined)}`);
           resizeCanvas();
 
           const vmData = getAllViewModelProperties(widgetState.r);
@@ -885,42 +880,33 @@
           generateUIModel();
           ensureFPSCounter(widgetState.r);
           widgetState.riveReady = true;
-          console.log(`[Rive] riveReady=true gen=${loadGen}`);
 
           // Guard: only show canvas if this is still the active load
           const genAtLoad = loadGen;
           setTimeout(() => {
             if (widgetState._loadGen === genAtLoad) {
-              console.log(`[Rive] Showing canvas gen=${genAtLoad}`);
               document.getElementById("canvas").classList.add("ready");
-            } else {
-              console.log(`[Rive] Skipping canvas show — gen stale (${genAtLoad} vs active ${widgetState._loadGen})`);
             }
           }, 400);
 
           if (widgetState.pendingInitialValues) {
             const initialValues = widgetState.pendingInitialValues;
             widgetState.pendingInitialValues = null;
-            console.log(`[Rive] Deferring onSingularValue with pending values gen=${loadGen}`, Object.keys(initialValues));
             // Defer outside the Rive callback — calling cleanup() from within
             // onLoad is unsafe for the WebGL2 offscreen renderer and causes freezes
             setTimeout(() => onSingularValue(initialValues), 0);
-          } else {
-            console.log(`[Rive] No pending values at onLoad gen=${loadGen}`);
           }
         },
 
-        onLoadError: (err) => { console.error("[Rive] onLoadError:", err); },
+        onLoadError: () => {},
       };
 
       if (widgetState.artboardName) riveConfig.artboard = widgetState.artboardName;
       if (widgetState.stateMachineName) riveConfig.stateMachines = widgetState.stateMachineName;
-      console.log(`[Rive] new rive.Rive() with artboard="${riveConfig.artboard != null ? riveConfig.artboard : '(default)'}" stateMachines="${riveConfig.stateMachines != null ? riveConfig.stateMachines : '(none)'}" useOffscreenRenderer=${!!riveConfig.useOffscreenRenderer}`);
       widgetState.r = new rive.Rive(riveConfig);
     }
 
     function reloadRive(fileUrl) {
-      console.log(`[Rive] reloadRive — cleaning up and reinitializing`);
       document.getElementById("canvas").classList.remove("ready");
       widgetState.referencedFontAssets = {};
       if (widgetState.r) { try { widgetState.r.cleanup(); } catch {} widgetState.r = null; }
@@ -945,9 +931,7 @@
             case "color":    handleColorUpdate(prop, value); break;
             case "list":     handleListUpdate(prop, value); break;
           }
-        } catch (err) {
-          console.error(`Failed to update '${name}' (id: ${id}):`, err.message);
-        }
+        } catch { }
       }
     }
 
@@ -986,10 +970,9 @@
       if (json.rive_renderer !== undefined) {
         const desiredRuntime = json.rive_renderer !== false ? "webgl2" : "canvas";
         const needLoad = !widgetState.runtime || widgetState.runtime !== desiredRuntime || !window.rive;
-        console.log(`[Flow] rive_renderer=${json.rive_renderer} desiredRuntime=${desiredRuntime} needLoad=${needLoad}`);
         if (needLoad) {
           try { await toggleRiveRuntime(desiredRuntime); }
-          catch (e) { console.error("Failed to load desired runtime:", desiredRuntime, e); return; }
+          catch (e) { return; }
         }
       }
 
@@ -998,7 +981,6 @@
         if (typeof json.rive_file_url === "string" && json.rive_file_url.endsWith(".riv")) {
           const newFileUrl = json.rive_file_url;
           if (newFileUrl !== widgetState.fileUrl) {
-            console.log(`[Flow] File URL changed → ${newFileUrl}`);
             widgetState.fileUrl = newFileUrl;
             if (json.rive_layout !== undefined) widgetState.layoutFit = widgetState.layoutOptions[parseInt(json.rive_layout, 10)] || "Contain";
             widgetState.artboardName = "";
@@ -1012,7 +994,6 @@
 
       // Initialize if URL is ready but no instance
       if (!widgetState.r && widgetState.fileUrl && widgetState.fileUrl.endsWith(".riv")) {
-        console.log(`[Flow] No Rive instance but URL ready — initializing`);
         initializeRive(widgetState.fileUrl);
         return;
       }
@@ -1027,7 +1008,6 @@
       if (json.rive_layout !== undefined) {
         const newLayout = widgetState.layoutOptions[parseInt(json.rive_layout, 10)] || "Contain";
         if (newLayout !== widgetState.layoutFit) {
-          console.log(`[Flow] Layout changed ${widgetState.layoutFit} → ${newLayout}, reloading`);
           widgetState.layoutFit = newLayout;
           if (widgetState.r && widgetState.fileUrl) { reloadRive(widgetState.fileUrl); return; }
         }
@@ -1042,7 +1022,6 @@
           if (artboard) {
             const newArtboard = typeof artboard.name === "function" ? artboard.name() : artboard.name;
             if (newArtboard !== widgetState.artboardName) {
-              console.log(`[Flow] Artboard changed "${widgetState.artboardName}" → "${newArtboard}", reloading`);
               widgetState.artboardName = newArtboard;
               widgetState.stateMachineName = "";
               widgetState.stateMachineIndex = 0;
@@ -1059,18 +1038,13 @@
           widgetState.stateMachineIndex = smIndex;
           var _smArr = widgetState.r.stateMachineNames; var _smVal = _smArr != null ? _smArr[smIndex] : undefined; const newName = _smVal != null ? _smVal : "";
           if (newName !== widgetState.stateMachineName) {
-            console.log(`[Flow] SM changed "${widgetState.stateMachineName}" → "${newName}", reloading`);
             widgetState.stateMachineName = newName;
             if (widgetState.fileUrl) { reloadRive(widgetState.fileUrl); return; }
           }
         }
       }
 
-      if (!widgetState.r || !widgetState.riveReady) {
-        console.log(`[Flow] Skipping updateDynamicProperties — r=${!!widgetState.r} riveReady=${widgetState.riveReady}`);
-        return;
-      }
-      console.log(`[Flow] updateDynamicProperties`);
+      if (!widgetState.r || !widgetState.riveReady) return;
       updateDynamicProperties(json);
     }
 
@@ -1089,7 +1063,6 @@
 
     SingularWidget.init({
       onInit: async (json) => {
-        console.log(`[Init] onInit called renderer=${json.rive_renderer} url=${json.rive_file_url}`);
         widgetState.pendingInitialValues = json;
         const layoutIndex = parseInt(json.rive_layout, 10);
         widgetState.layoutFit = (widgetState.layoutOptions && widgetState.layoutOptions[layoutIndex]) || widgetState.layoutFit || "Contain";
@@ -1098,20 +1071,13 @@
           const desiredRuntime = json.rive_renderer ? "webgl2" : "canvas";
           try {
             await toggleRiveRuntime(desiredRuntime);
-            console.log(`[Init] Runtime ready: ${desiredRuntime}`);
-          } catch (e) {
-            console.warn("[Rive] Failed to load", desiredRuntime, "— falling back to canvas:", e);
+          } catch {
             try { await toggleRiveRuntime("canvas"); } catch {}
           }
-        } else {
-          console.log(`[Init] rive_renderer undefined — skipping runtime load, onSingularValue will handle it`);
         }
         if (typeof json.rive_file_url === "string" && json.rive_file_url.endsWith(".riv")) {
-          console.log(`[Init] Starting initializeRive`);
           widgetState.fileUrl = json.rive_file_url;
           initializeRive(json.rive_file_url);
-        } else {
-          console.warn(`[Init] No valid rive_file_url in onInit:`, json.rive_file_url);
         }
       },
       onValue: onSingularValue,

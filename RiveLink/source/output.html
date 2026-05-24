@@ -614,8 +614,7 @@
 
     function handleListUpdate(prop, rawData) {
       const rawStr = typeof rawData === 'string' ? rawData : JSON.stringify(rawData);
-      if (prop._lastListData === rawStr) return;
-      prop._lastListData = rawStr;
+      const dataUnchanged = prop._lastListData === rawStr;
 
       let items;
       try {
@@ -649,16 +648,20 @@
         currentLength = 0;
       }
 
-      // When count is unchanged and the list is already populated, try to swap
-      // instances into the incoming order. This makes the Rive runtime play the
-      // swap animation. Requires items to have stable name/id keys. Falls back
-      // to data-in-place update if keys are absent or mismatched.
-      // NOTE: this relies on the Rive sort script treating sortType=0 as a no-op
-      // (not calling applyOrder). Without that, the script would immediately undo
-      // these swaps on onListChanged. See rive_sorter_script for the required change.
+      // Always attempt to reorder instances to match the incoming order, even
+      // when the payload data is unchanged. This is the key to restoring the
+      // no-sort order after switching back from a stat-sort mode: the list
+      // payload is identical but the Rive list is in the sorted order and must
+      // be animated back. tryReorderInstancesToIncomingOrder is a no-op when
+      // the list is already in the correct order, so this is safe to call every
+      // time. Data writes are still skipped below if data hasn't changed.
       if (prop.instanceMap.size > 0 && currentLength === newLength && currentLength > 1) {
         tryReorderInstancesToIncomingOrder(listAcc, items, prop.instanceMap);
       }
+
+      // Skip data writes when payload is unchanged (order may have been fixed above)
+      if (dataUnchanged) return;
+      prop._lastListData = rawStr;
 
       // Snapshot existing instance references before any data writes.
       // Holding direct refs means any sort-induced reorders mid-loop don't affect

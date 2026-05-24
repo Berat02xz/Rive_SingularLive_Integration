@@ -1,7 +1,54 @@
 (function() {
   let capturedOrder = null;
+  let lastSentOrder = null;
   let lastSortMode = null;
-  let isFirstRun = true;  // NEW: tracks the very first updateLeaderboard call
+  let isFirstRun = true;
+
+  const normalizeSortMode = (value) => {
+    const mode = parseInt(value, 10);
+    return Number.isFinite(mode) ? mode : 0;
+  };
+  const isSortMode = (value) => {
+    const mode = normalizeSortMode(value);
+    return mode === 1 || mode === 2;
+  };
+
+  const normalizeLeaderboard = (value) => {
+    if (Array.isArray(value)) return value;
+    if (typeof value === "string") {
+      try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  };
+
+  const itemKey = (item) => {
+    if (!item || typeof item !== "object") return "";
+    if (item.name !== undefined && item.name !== null) return String(item.name);
+    if (item.id !== undefined && item.id !== null) return String(item.id);
+    return "";
+  };
+
+  const captureOrder = (items) => items.map(itemKey).filter(key => key !== "");
+
+  const keepOrder = (items, order) => {
+    const orderToUse = order || captureOrder(items);
+
+    const remaining = [...items];
+    const ordered = [];
+
+    orderToUse.forEach((key) => {
+      const index = remaining.findIndex(item => itemKey(item) === key);
+      if (index !== -1) ordered.push(remaining.splice(index, 1)[0]);
+    });
+
+    ordered.push(...remaining);
+    return ordered;
+  };
 
   return {
     init: function(comp, context) {
@@ -9,46 +56,26 @@
 
       const updateLeaderboard = function() {
         const payload = comp.getPayload2();
-        const leaderboardData = payload.Leaderboard || [];
+        const leaderboardData = normalizeLeaderboard(payload.Leaderboard);
         const currentSortMode = payload.Sort;
+        const currentSortType = normalizeSortMode(currentSortMode);
 
-        // -----------------------------------------------------------------
-        // FIRST-RUN HANDLING
-        // On initial load, Singular has already sorted leaderboardData based
-        // on the Sort control. If we sent that pre-sorted data straight to
-        // the widget, the Rive Lua script would record the sorted order as
-        // "originalOrder" — so switching back to Sort=0 later would restore
-        // the sorted order (i.e. the list looks reversed for Sort=1).
-        //
-        // Workaround: on the first run, pretend Sort=0 — send the data with
-        // sortType=0 so the Rive script captures the authored order, then
-        // schedule the real Sort value to be applied a tick later.
-        // -----------------------------------------------------------------
         if (isFirstRun) {
           isFirstRun = false;
 
-          // Phase 1: force Sort=0 in the widget so originalOrder is captured
-          //          in the order Singular hands us the data on first load.
           if (riveWidget) {
             riveWidget.setPayload({
               "listProperty": leaderboardData,
               "sortType": 0
             });
           }
+          lastSentOrder = captureOrder(leaderboardData);
 
-          // Phase 2: a short delay later, apply the actual Sort the user has
-          //          selected. The Rive Lua script will sort but keep the
-          //          originalOrder snapshot from phase 1 intact, so going
-          //          back to Sort=0 later will restore the authored order.
-          if (currentSortMode === '1' || currentSortMode === '2') {
-            // Pre-capture the order before phase 2, mirroring the normal
-            // 0 → 1/2 transition logic below.
-            capturedOrder = leaderboardData.map(item => item.name);
+          if (isSortMode(currentSortMode)) {
+            capturedOrder = lastSentOrder;
             setTimeout(() => {
               if (riveWidget) {
-                riveWidget.setPayload({
-                  "sortType": parseInt(currentSortMode, 10)
-                });
+                riveWidget.setPayload({ "sortType": currentSortType });
               }
             }, 100);
           }
@@ -57,40 +84,25 @@
           return;
         }
 
-        // -----------------------------------------------------------------
-        // NORMAL (post-first-run) BEHAVIOR — unchanged from your original
-        // -----------------------------------------------------------------
-        if ((currentSortMode === '1' || currentSortMode === '2') && (lastSortMode === '0' || lastSortMode === null)) {
-          capturedOrder = leaderboardData.map(item => item.name);
-        }
-
-        if (currentSortMode === '0') {
-          capturedOrder = null;
+        if (isSortMode(currentSortMode) && !isSortMode(lastSortMode)) {
+          capturedOrder = lastSentOrder || captureOrder(leaderboardData);
         }
 
         let dataForWidget;
-
-        if (capturedOrder) {
-          const sourceData = [...leaderboardData];
-          dataForWidget = capturedOrder.map(name => {
-            const index = sourceData.findIndex(item => item.name === name);
-            if (index !== -1) {
-              const item = sourceData.splice(index, 1)[0];
-              return item;
-            }
-            return null;
-          }).filter(item => item !== null);
+        if (isSortMode(currentSortMode)) {
+          dataForWidget = keepOrder(leaderboardData, capturedOrder || lastSentOrder);
+          capturedOrder = captureOrder(dataForWidget);
         } else {
           dataForWidget = leaderboardData;
+          capturedOrder = null;
         }
 
-        console.log("Updating listProperty on Rive widget.");
-        console.log("Saved state (capturedOrder):", JSON.stringify(capturedOrder, null, 2));
-        console.log("New state sent to listProperty:", JSON.stringify(dataForWidget, null, 2));
+        lastSentOrder = captureOrder(dataForWidget);
 
         if (riveWidget) {
           riveWidget.setPayload({
-            "listProperty": dataForWidget
+            "listProperty": dataForWidget,
+            "sortType": currentSortType
           });
         }
 
@@ -109,8 +121,9 @@
 
     close: function(comp, context) {
       capturedOrder = null;
+      lastSentOrder = null;
       lastSortMode = null;
-      isFirstRun = true;  // reset for next mount
+      isFirstRun = true;
     }
   };
 })();

@@ -15,12 +15,9 @@ type Sorter = {
   context: Context?,
   onListChanged: (() -> ())?,
   onSortChanged: (() -> ())?,
-  -- Snapshot of the list in its original/manual order, captured the first
-  -- time we see each item (while the list is still unsorted). Used to
-  -- restore the list when sortType returns to 0.
+  -- Per-item rank captured the first time each item is seen. Used only for
+  -- tiebreaking when two items have equal stat values in sort modes 1/2.
   originalOrder: { Data.Item },
-  -- Per-item lookup matching originalOrder, so we can give each item a
-  -- stable rank regardless of where it currently sits in the list.
   originalRank: { [Data.Item]: number },
 }
 
@@ -152,9 +149,10 @@ local function performSort(self: Sorter)
     return
   end
 
-  -- sortType 0 → restore the list to its captured original/manual order.
+  -- sortType 0 → no-sort mode. Item order is controlled by the widget via
+  -- list.swap() on the runtime side. The script does nothing here so that
+  -- widget-driven swaps (which trigger this listener) are not undone.
   if mode == 0 then
-    applyOrder(self, list, self.originalOrder)
     return
   end
 
@@ -238,8 +236,8 @@ end
 
 local function refresh(self: Sorter)
   -- Record any items we haven't seen before BEFORE sorting, so newly added
-  -- items get captured while the list is still in (relatively) authored
-  -- order. Existing items keep their original rank.
+  -- items get captured while the list is in incoming order. Existing items
+  -- keep their original rank (used for tiebreaking in sort modes 1/2).
   captureOriginalOrder(self)
   subscribeStatListeners(self)
   performSort(self)

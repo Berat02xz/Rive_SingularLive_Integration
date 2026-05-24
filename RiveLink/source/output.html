@@ -535,144 +535,59 @@
       }
     }
 
-    function debugItemKey(item) {
-      if (!item || typeof item !== "object") return "<empty>";
-      if (item.name !== undefined && item.name !== null) return String(item.name);
-      if (item.id !== undefined && item.id !== null) return String(item.id);
-      return "<no-key>";
+    function debugPayloadSummary(json) {
+      return { keyCount: json ? Object.keys(json).length : 0 };
     }
 
-    function debugIncomingOrder(items) {
-      if (!Array.isArray(items)) return [];
-      return items.map((item, index) => `${index}:${debugItemKey(item)}`);
-    }
-
-    function debugInstanceString(inst, key) {
-      try {
-        const accessor = inst.string(key);
-        if (accessor && accessor.value !== undefined && accessor.value !== null) {
-          return String(accessor.value);
-        }
-      } catch {}
-      return "";
-    }
-
-    function debugInstanceKey(inst) {
-      if (!inst) return "<missing>";
-      return debugInstanceString(inst, "name") || debugInstanceString(inst, "id") || "<no-key>";
-    }
-
-    function debugListOrder(listAcc) {
-      const order = [];
-      const length = listAcc && listAcc.length != null ? listAcc.length : 0;
-      for (let i = 0; i < length; i++) {
-        try {
-          order.push(`${i}:${debugInstanceKey(listAcc.instanceAt(i))}`);
-        } catch {
-          order.push(`${i}:<read-error>`);
-        }
-      }
-      return order;
-    }
-
-    function debugInstanceMapOrder(prop) {
-      if (!prop.instanceMap) return [];
-      return Array.from(prop.instanceMap.entries())
-        .sort((a, b) => a[0] - b[0])
-        .map(([index, inst]) => `${index}:${debugInstanceKey(inst)}`);
-    }
-
-    function debugSortTypeValue() {
-      const props = widgetState.riveProps || {};
-      for (const [name, prop] of Object.entries(props)) {
-        if (name !== "sortType" && prop.path !== "sortType") continue;
-        try {
-          return prop.accessor ? prop.accessor.value : "<no-accessor>";
-        } catch {
-          return "<read-error>";
-        }
-      }
-      return "<not-found>";
-    }
-
-    function getSortTypeProp() {
-      const props = widgetState.riveProps || {};
-      for (const [name, prop] of Object.entries(props)) {
-        if (name === "sortType" || prop.path === "sortType") return prop;
-      }
+    // Returns a stable string key for an incoming item payload object.
+    // Used to match items to their corresponding Rive instances across reorders.
+    function resolveItemKey(item) {
+      if (!item || typeof item !== 'object') return null;
+      const name = item.name != null ? String(item.name) : '';
+      if (name) return 'n:' + name;
+      const id = item.id != null ? String(item.id) : '';
+      if (id) return 'i:' + id;
       return null;
     }
 
-    function normalizeSortType(value) {
-      const parsed = parseInt(value, 10);
-      return Number.isFinite(parsed) ? parsed : null;
+    // Returns the same stable key by reading string properties from a live Rive instance.
+    function resolveInstanceKey(inst) {
+      if (!inst) return null;
+      try { const a = inst.string('name'); if (a && a.value) return 'n:' + String(a.value); } catch {}
+      try { const a = inst.string('id');   if (a && a.value) return 'i:' + String(a.value); } catch {}
+      return null;
     }
 
-    function isExternalNoSortMode() {
-      return normalizeSortType(widgetState.externalSortType) === 0;
-    }
-
-    function rebuildListInstanceMap(prop, listAcc) {
-      prop.instanceMap = new Map();
-      const length = listAcc && listAcc.length != null ? listAcc.length : 0;
-      for (let i = 0; i < length; i++) {
-        try {
-          const inst = listAcc.instanceAt(i);
-          if (inst) prop.instanceMap.set(i, inst);
-        } catch {}
-      }
-    }
-
-    function useNoSortSentinel(reason) {
-      const sortTypeProp = getSortTypeProp();
-      if (!sortTypeProp || !sortTypeProp.accessor) return false;
-      try {
-        if (normalizeSortType(sortTypeProp.accessor.value) !== 3) {
-          console.log("[RiveWidget:no-sort] setting internal sortType sentinel", {
-            reason,
-            externalSortType: widgetState.externalSortType,
-            previousRiveSortType: sortTypeProp.accessor.value,
-            sentinelSortType: 3
-          });
-          sortTypeProp.accessor.value = 3;
-        }
-        return true;
-      } catch (error) {
-        console.warn("[RiveWidget:no-sort] failed to set internal sentinel", { reason, error });
-        return false;
-      }
-    }
-
-    function trySwapListToIncomingOrder(prop, listAcc, items) {
-      if (!isExternalNoSortMode()) return false;
-      if (!listAcc || typeof listAcc.swap !== "function") return false;
-
+    // Rearranges live Rive instances in the list so their order matches `items`,
+    // using list.swap() which triggers the Rive swap animation. On success the
+    // instanceMap is rebuilt to reflect the new positions.
+    //
+    // Requires: items must have stable name/id keys AND those keys must match
+    // the corresponding Rive instances. Falls back gracefully (no-op) when
+    // keys are absent, ambiguous, or mismatched.
+    function tryReorderInstancesToIncomingOrder(listAcc, items, instanceMap) {
       const length = listAcc.length != null ? listAcc.length : 0;
-      if (length !== items.length || length < 2) return false;
+      if (length !== items.length || length < 2) return;
 
-      const desiredKeys = items.map(debugItemKey);
-      if (desiredKeys.some(key => key === "<empty>" || key === "<no-key>")) return false;
-      if (new Set(desiredKeys).size !== desiredKeys.length) return false;
-
-      useNoSortSentinel("manual list reorder");
-
+      // Read current instance positions
       const current = [];
       const positionByKey = new Map();
       for (let i = 0; i < length; i++) {
         let inst;
         try { inst = listAcc.instanceAt(i); } catch {}
-        const key = debugInstanceKey(inst);
-        if (!inst || key === "<missing>" || key === "<no-key>" || positionByKey.has(key)) {
-          return false;
-        }
+        const key = resolveInstanceKey(inst);
+        if (!inst || !key || positionByKey.has(key)) return; // can't uniquely identify
         current[i] = inst;
         positionByKey.set(key, i);
       }
 
-      if (!desiredKeys.every(key => positionByKey.has(key))) return false;
+      // Resolve desired keys from incoming items
+      const desiredKeys = items.map(resolveItemKey);
+      if (desiredKeys.some(k => !k)) return; // items lack identifiers
+      if (new Set(desiredKeys).size !== desiredKeys.length) return; // duplicate keys
+      if (!desiredKeys.every(k => positionByKey.has(k))) return; // key mismatch
 
-      let didSwap = false;
-      const swaps = [];
+      // Apply permutation with selection sort (minimum swaps)
       for (let i = 0; i < desiredKeys.length; i++) {
         const desiredKey = desiredKeys[i];
         const currentPos = positionByKey.get(desiredKey);
@@ -680,62 +595,26 @@
 
         const desiredInst = current[currentPos];
         const displacedInst = current[i];
-        const displacedKey = debugInstanceKey(displacedInst);
+        const displacedKey = resolveInstanceKey(displacedInst);
 
-        try {
-          listAcc.swap(i, currentPos);
-        } catch (error) {
-          console.warn("[RiveWidget:no-sort] list swap failed", {
-            from: currentPos,
-            to: i,
-            desiredKey,
-            error
-          });
-          return didSwap;
-        }
+        try { listAcc.swap(i, currentPos); } catch { return; }
 
         current[i] = desiredInst;
         current[currentPos] = displacedInst;
         positionByKey.set(desiredKey, i);
-        positionByKey.set(displacedKey, currentPos);
-        swaps.push({ from: currentPos, to: i, key: desiredKey });
-        didSwap = true;
+        if (displacedKey) positionByKey.set(displacedKey, currentPos);
       }
 
-      if (didSwap) {
-        rebuildListInstanceMap(prop, listAcc);
-        console.log("[RiveWidget:no-sort] manual swaps applied", {
-          swaps,
-          incomingOrder: desiredKeys,
-          listOrderAfterSwaps: debugListOrder(listAcc)
-        });
+      // Rebuild instanceMap: logical index now matches list position after swaps
+      instanceMap.clear();
+      for (let i = 0; i < length; i++) {
+        if (current[i]) instanceMap.set(i, current[i]);
       }
-
-      return didSwap;
-    }
-
-    function debugPayloadSummary(json) {
-      const list = json && Array.isArray(json.listProperty) ? json.listProperty : null;
-      return {
-        keyCount: json ? Object.keys(json).length : 0,
-        sortType: json ? json.sortType : undefined,
-        sortByStat: json ? json.sortByStat : undefined,
-        hasListProperty: !!list,
-        listLength: list ? list.length : 0,
-        listOrder: list ? debugIncomingOrder(list) : []
-      };
     }
 
     function handleListUpdate(prop, rawData) {
       const rawStr = typeof rawData === 'string' ? rawData : JSON.stringify(rawData);
-      const shouldProcessNoSortOrder = isExternalNoSortMode();
-      if (prop._lastListData === rawStr && !shouldProcessNoSortOrder) {
-        console.log("[RiveWidget:list] skipped unchanged payload", {
-          path: prop.path,
-          rawLength: rawStr ? rawStr.length : 0
-        });
-        return;
-      }
+      if (prop._lastListData === rawStr) return;
       prop._lastListData = rawStr;
 
       let items;
@@ -743,119 +622,65 @@
         const parsed = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
         items = Array.isArray(parsed) ? parsed : [parsed];
       } catch (error) {
-        console.warn("[RiveWidget:list] failed to parse list payload", {
-          path: prop.path,
-          error,
-          rawData
-        });
+        console.warn("[RiveWidget:list] failed to parse payload", { path: prop.path, error });
         return;
       }
 
       const vmi = widgetState.r.viewModelInstance;
-      if (!vmi) {
-        console.warn("[RiveWidget:list] no viewModelInstance", { path: prop.path });
-        return;
-      }
+      if (!vmi) return;
       var _listResult = vmi.list(prop.path); const listAcc = _listResult != null ? _listResult : prop.accessor;
 
-      // instanceMap tracks logical-index → instance reference so that updates
-      // always target the correct instance regardless of how the Rive sort
-      // script has reordered the list via swap(). Without this, a mid-loop
-      // sort triggered by a stat change would shift items under the loop
-      // cursor, causing some instances to be written twice and others skipped.
+      // instanceMap tracks logical-index → instance reference so writes always
+      // target the correct instance even when the Rive sort script reorders the
+      // list mid-loop (e.g. a stat change triggers a sort while we are iterating).
       if (!prop.instanceMap) prop.instanceMap = new Map();
 
       let currentLength = listAcc.length != null ? listAcc.length : 0;
       const newLength = items.length;
-      const incomingOrder = debugIncomingOrder(items);
-      const listOrderBeforeUpdate = debugListOrder(listAcc);
-      const instanceMapBeforeUpdate = debugInstanceMapOrder(prop);
-      const orderChangesDuringWrites = [];
 
-      console.groupCollapsed(`[RiveWidget:list] update ${prop.path}`);
-      console.log("sortType accessor value:", debugSortTypeValue());
-      console.log("incoming order:", incomingOrder);
-      console.log("current Rive list order before update:", listOrderBeforeUpdate);
-      console.log("instanceMap before update:", instanceMapBeforeUpdate);
-      console.log("lengths:", { currentLength, newLength });
-
-      // On the very first update (instanceMap empty), the Rive list may already
-      // contain authored-default items that were sorted by an active sort mode
-      // (e.g. sortType processed before this list update in updateDynamicProperties).
-      // Reusing those slots would map Singular's authored order to the wrong Rive
-      // instances, causing the Lua sorter to record the wrong originalOrder —
-      // leading to a reversed list when switching back to NoSorting.
-      // Fix: clear the list on first call so every item is re-added in Singular's
-      // authored order, giving the Lua sorter the correct originalOrder to restore.
+      // On the very first update, clear any authored/default instances so items
+      // are re-added in Singular's incoming order. Stat-sort tiebreaking in the
+      // Rive script uses the first-seen rank, so this ensures ties resolve in
+      // the authored Singular order.
       if (prop.instanceMap.size === 0 && currentLength > 0) {
-        console.log("first list update: clearing existing authored/default instances", {
-          currentLength
-        });
         for (let i = currentLength - 1; i >= 0; i--) {
-          try {
-            console.log("removeInstanceAt during initial clear:", i, debugListOrder(listAcc));
-            listAcc.removeInstanceAt(i);
-          } catch (error) {
-            console.warn("removeInstanceAt failed during initial clear:", { index: i, error });
-          }
+          try { listAcc.removeInstanceAt(i); } catch {}
         }
         currentLength = 0;
-        console.log("Rive list order after initial clear:", debugListOrder(listAcc));
       }
 
-      if (trySwapListToIncomingOrder(prop, listAcc, items)) {
-        currentLength = listAcc.length != null ? listAcc.length : 0;
+      // When count is unchanged and the list is already populated, try to swap
+      // instances into the incoming order. This makes the Rive runtime play the
+      // swap animation. Requires items to have stable name/id keys. Falls back
+      // to data-in-place update if keys are absent or mismatched.
+      // NOTE: this relies on the Rive sort script treating sortType=0 as a no-op
+      // (not calling applyOrder). Without that, the script would immediately undo
+      // these swaps on onListChanged. See rive_sorter_script for the required change.
+      if (prop.instanceMap.size > 0 && currentLength === newLength && currentLength > 1) {
+        tryReorderInstancesToIncomingOrder(listAcc, items, prop.instanceMap);
       }
 
-      // Snapshot instance references at their current logical positions before
-      // any writes (which may trigger sort-induced reorders mid-loop).
+      // Snapshot existing instance references before any data writes.
+      // Holding direct refs means any sort-induced reorders mid-loop don't affect
+      // which instance each logical index points to.
       const existingInstances = [];
       for (let i = 0; i < currentLength; i++) {
         try { existingInstances[i] = listAcc.instanceAt(i); } catch {}
       }
-      console.log("existingInstances snapshot:", existingInstances.map((inst, index) => `${index}:${debugInstanceKey(inst)}`));
 
-      // Update existing instances by reference — sort order in the Rive list
-      // is irrelevant because we hold direct instance refs from instanceMap.
+      // Update existing instances by reference — sort position is irrelevant
       const keepCount = Math.min(currentLength, newLength);
       for (let i = 0; i < keepCount; i++) {
         const inst = prop.instanceMap.has(i) ? prop.instanceMap.get(i) : existingInstances[i];
         if (inst) {
-          const beforeOrder = debugListOrder(listAcc);
-          console.log("applyPropsToInstance existing:", {
-            logicalIndex: i,
-            targetIncomingKey: debugItemKey(items[i]),
-            instanceKeyBefore: debugInstanceKey(inst),
-            source: prop.instanceMap.has(i) ? "instanceMap" : "currentListSnapshot"
-          });
-          try { applyPropsToInstance(inst, items[i]); } catch (error) {
-            console.warn("applyPropsToInstance existing failed:", { logicalIndex: i, error });
-          }
+          try { applyPropsToInstance(inst, items[i]); } catch {}
           prop.instanceMap.set(i, inst);
-          const afterOrder = debugListOrder(listAcc);
-          if (beforeOrder.join("|") !== afterOrder.join("|")) {
-            orderChangesDuringWrites.push({
-              logicalIndex: i,
-              beforeOrder,
-              afterOrder
-            });
-            console.log("Rive list order changed during existing instance write:", {
-              logicalIndex: i,
-              beforeOrder,
-              afterOrder
-            });
-          }
         }
       }
 
       // Remove instances from the end if count decreased
       for (let i = currentLength - 1; i >= newLength; i--) {
-        try {
-          console.log("removeInstanceAt count decrease:", i, debugListOrder(listAcc));
-          listAcc.removeInstanceAt(i);
-        } catch (error) {
-          console.warn("removeInstanceAt failed:", { index: i, error });
-        }
+        try { listAcc.removeInstanceAt(i); } catch {}
         prop.instanceMap.delete(i);
       }
 
@@ -864,52 +689,29 @@
       for (let i = currentLength; i < newLength; i++) {
         const item = items[i];
         const vmName = item._vm != null ? item._vm : prop.itemVMName;
-        if (!vmName) continue;
+        if (!vmName) {
+          console.warn("[RiveWidget:list] cannot add item: item ViewModel name unknown", {
+            index: i,
+            hint: "ensure the Rive list has at least one default item, or include a _vm field in each item"
+          });
+          continue;
+        }
         let vm, inst;
         try { vm = widgetState.r.viewModelByName(vmName); } catch {}
         try { inst = vm ? vm.instance() : undefined; } catch {}
         if (!inst) {
-          console.warn("could not create list item instance:", {
-            logicalIndex: i,
-            incomingKey: debugItemKey(item),
-            vmName
-          });
+          console.warn("[RiveWidget:list] could not create item instance", { index: i, vmName });
           continue;
         }
-        console.log("addInstance:", {
-          logicalIndex: i,
-          incomingKey: debugItemKey(item),
-          vmName,
-          listOrderBeforeAdd: debugListOrder(listAcc)
-        });
         applyPropsToInstance(inst, item);
         try {
           listAcc.addInstance(inst);
           prop.addedInstances.push(inst);
           prop.instanceMap.set(i, inst);
-          console.log("listOrderAfterAdd:", debugListOrder(listAcc));
         } catch (error) {
-          console.warn("addInstance failed:", { logicalIndex: i, error });
+          console.warn("[RiveWidget:list] addInstance failed", { index: i, error });
         }
       }
-
-      const listOrderAfterUpdate = debugListOrder(listAcc);
-      const instanceMapAfterUpdate = debugInstanceMapOrder(prop);
-      console.log("current Rive list order after update:", listOrderAfterUpdate);
-      console.log("instanceMap after update:", instanceMapAfterUpdate);
-      console.groupEnd();
-      console.log("[RiveWidget:list] summary", {
-        path: prop.path,
-        sortType: debugSortTypeValue(),
-        incomingOrder,
-        listOrderBeforeUpdate,
-        listOrderAfterUpdate,
-        instanceMapBeforeUpdate,
-        instanceMapAfterUpdate,
-        orderChangedDuringWrites: orderChangesDuringWrites.length > 0,
-        orderChangesDuringWrites,
-        lengths: { before: currentLength, incoming: newLength, after: listAcc.length != null ? listAcc.length : 0 }
-      });
     }
 
     // =========================================================================
@@ -1228,32 +1030,11 @@
     // =========================================================================
 
     function updateDynamicProperties(json) {
-      if (json.sortType !== undefined) widgetState.externalSortType = json.sortType;
-      console.log("[RiveWidget] updateDynamicProperties summary", debugPayloadSummary(json));
       for (const [name, prop] of Object.entries(widgetState.riveProps)) {
         const id = toAlphanumericId(name);
         if (json[id] === undefined) continue;
         try {
-          let value = json[id];
-          const isSortType = prop.path === "sortType" || name === "sortType";
-          if (isSortType && normalizeSortType(value) === 0) {
-            value = 3;
-            console.log("[RiveWidget:no-sort] using internal sortType sentinel for external 0", {
-              externalSortType: json[id],
-              riveSortTypeValue: value
-            });
-          }
-          const isInteresting = prop.type === "list" || prop.path === "sortType" || name === "sortType" || prop.path === "sortByStat" || name === "sortByStat";
-          if (isInteresting) {
-            console.log("[RiveWidget] applying property:", {
-              name,
-              id,
-              path: prop.path,
-              type: prop.type,
-              externalValue: json[id],
-              value: prop.type === "list" ? debugIncomingOrder(value) : value
-            });
-          }
+          const value = json[id];
           switch (prop.type) {
             case "string": case "number": case "boolean": handleScalarUpdate(prop, value); break;
             case "image":    handleImageUpdate(name, prop, value); break;
@@ -1262,17 +1043,8 @@
             case "color":    handleColorUpdate(prop, value); break;
             case "list":     handleListUpdate(prop, value); break;
           }
-          if (prop.path === "sortType" || name === "sortType") {
-            console.log("sortType after apply:", debugSortTypeValue());
-          }
         } catch (error) {
-          console.warn("[RiveWidget] property apply failed:", {
-            name,
-            id,
-            path: prop.path,
-            type: prop.type,
-            error
-          });
+          console.warn("[RiveWidget] property apply failed:", { name, id, path: prop.path, type: prop.type, error });
         }
       }
     }

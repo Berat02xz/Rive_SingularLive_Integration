@@ -549,8 +549,6 @@
       const vmi = widgetState.r.viewModelInstance;
       if (!vmi) return;
       var _listResult = vmi.list(prop.path); const listAcc = _listResult != null ? _listResult : prop.accessor;
-      const currentLength = listAcc.length != null ? listAcc.length : 0;
-      const newLength = items.length;
 
       // instanceMap tracks logical-index → instance reference so that updates
       // always target the correct instance regardless of how the Rive sort
@@ -558,6 +556,24 @@
       // sort triggered by a stat change would shift items under the loop
       // cursor, causing some instances to be written twice and others skipped.
       if (!prop.instanceMap) prop.instanceMap = new Map();
+
+      let currentLength = listAcc.length != null ? listAcc.length : 0;
+      const newLength = items.length;
+
+      // On the very first update (instanceMap empty), the Rive list may already
+      // contain authored-default items that were sorted by an active sort mode
+      // (e.g. sortType processed before this list update in updateDynamicProperties).
+      // Reusing those slots would map Singular's authored order to the wrong Rive
+      // instances, causing the Lua sorter to record the wrong originalOrder —
+      // leading to a reversed list when switching back to NoSorting.
+      // Fix: clear the list on first call so every item is re-added in Singular's
+      // authored order, giving the Lua sorter the correct originalOrder to restore.
+      if (prop.instanceMap.size === 0 && currentLength > 0) {
+        for (let i = currentLength - 1; i >= 0; i--) {
+          try { listAcc.removeInstanceAt(i); } catch {}
+        }
+        currentLength = 0;
+      }
 
       // Snapshot instance references at their current logical positions before
       // any writes (which may trigger sort-induced reorders mid-loop).

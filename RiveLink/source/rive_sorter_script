@@ -5,143 +5,33 @@ type StatListenerEntry = {
   cb: () -> (),
 }
 
-type KeyListenerEntry = {
-  name: Property<string>?,
-  id: Property<string>?,
-  cb: () -> (),
-}
-
-type ItemSnapshot = {
-  strings: { [string]: string },
-  numbers: { [string]: number },
-}
-
 type Sorter = {
   vm: Data.Main?,
   list: PropertyList?,
   sortByStat: Property<number>?,
   sortType: Property<number>?,
   statListeners: { [Data.Item]: StatListenerEntry },
-  keyListeners: { [Data.Item]: KeyListenerEntry },
   trackedStat: number,
   context: Context?,
   onListChanged: (() -> ())?,
   onSortChanged: (() -> ())?,
+  -- Snapshot of the list in its original/manual order, captured the first
+  -- time we see each item (while the list is still unsorted). Used to
+  -- restore the list when sortType returns to 0.
   originalOrder: { Data.Item },
+  -- Per-item lookup matching originalOrder, so we can give each item a
+  -- stable rank regardless of where it currently sits in the list.
   originalRank: { [Data.Item]: number },
-  itemKeys: { [Data.Item]: string },
-  isRefreshing: boolean,
-  needsRefresh: boolean,
 }
 
-local STRING_FIELDS = { "id", "name", "image", "imageUrl" }
-local NUMBER_FIELDS = {
-  "stat1",
-  "stat2",
-  "stat3",
-  "stat4",
-  "stat5",
-  "stat6",
-  "stat7",
-  "stat8",
-}
-
-local refresh: (Sorter) -> ()
-
-local function requestRefresh(self: Sorter)
-  if self.isRefreshing then
-    return
-  end
-
-  self.needsRefresh = true
-  if self.context then
-    self.context:markNeedsUpdate()
-  else
-    refresh(self)
-  end
-end
-
-local function getString(item: Data.Item, key: string): string
-  local prop = item:getString(key)
-  if prop then
-    return prop.value
-  end
-  return ""
-end
-
-local function getItemKey(item: Data.Item): string
-  local name = getString(item, "name")
-  if name ~= "" then
-    return name
-  end
-  return getString(item, "id")
-end
-
-local function getNumber(item: Data.Item, key: string): number
-  local prop = item:getNumber(key)
-  if prop then
-    return prop.value
-  end
-  return 0
-end
-
-local function snapshotItem(item: Data.Item): ItemSnapshot
-  local snapshot: ItemSnapshot = { strings = {}, numbers = {} }
-
-  for _, key in STRING_FIELDS do
-    local prop = item:getString(key)
-    if prop then
-      snapshot.strings[key] = prop.value
-    end
-  end
-
-  for _, key in NUMBER_FIELDS do
-    local prop = item:getNumber(key)
-    if prop then
-      snapshot.numbers[key] = prop.value
-    end
-  end
-
-  return snapshot
-end
-
-local function applySnapshot(item: Data.Item, snapshot: ItemSnapshot)
-  for key, value in snapshot.strings do
-    local prop = item:getString(key)
-    if prop and prop.value ~= value then
-      prop.value = value
-    end
-  end
-
-  for key, value in snapshot.numbers do
-    local prop = item:getNumber(key)
-    if prop and prop.value ~= value then
-      prop.value = value
-    end
-  end
-end
-
-local function captureCurrentOrder(self: Sorter)
-  local list = self.list
-  if not list then
-    return
-  end
-
-  self.originalOrder = {}
-  self.originalRank = {}
-  for i = 1, list.length do
-    local item = list[i] :: Data.Item
-    self.originalOrder[i] = item
-    self.originalRank[item] = i
-  end
-end
-
+-- Records the order of items that we haven't seen before. Safe to call
+-- repeatedly: existing entries are never overwritten, so once an item is
+-- recorded its rank is fixed for the lifetime of the script.
 local function captureOriginalOrder(self: Sorter)
   local list = self.list
   if not list then
     return
   end
-
   for i = 1, list.length do
     local item = list[i] :: Data.Item
     if self.originalRank[item] == nil then
@@ -152,36 +42,27 @@ local function captureOriginalOrder(self: Sorter)
   end
 end
 
-local function captureItemKeys(self: Sorter)
-  local list = self.list
-  if not list then
-    return
-  end
-
-  self.itemKeys = {}
-  for i = 1, list.length do
-    local item = list[i] :: Data.Item
-    self.itemKeys[item] = getItemKey(item)
-  end
-end
-
 local function getStat(item: Data.Item, statIndex: number): number
+  local prop: Property<number>? = nil
   if statIndex == 1 then
-    return getNumber(item, "stat1")
+    prop = item:getNumber('stat1')
   elseif statIndex == 2 then
-    return getNumber(item, "stat2")
+    prop = item:getNumber('stat2')
   elseif statIndex == 3 then
-    return getNumber(item, "stat3")
+    prop = item:getNumber('stat3')
   elseif statIndex == 4 then
-    return getNumber(item, "stat4")
+    prop = item:getNumber('stat4')
   elseif statIndex == 5 then
-    return getNumber(item, "stat5")
+    prop = item:getNumber('stat5')
   elseif statIndex == 6 then
-    return getNumber(item, "stat6")
+    prop = item:getNumber('stat6')
   elseif statIndex == 7 then
-    return getNumber(item, "stat7")
+    prop = item:getNumber('stat7')
   elseif statIndex == 8 then
-    return getNumber(item, "stat8")
+    prop = item:getNumber('stat8')
+  end
+  if prop then
+    return prop.value
   end
   return 0
 end
@@ -210,7 +91,10 @@ local function getStatProperty(
   return nil
 end
 
+-- Reorder `list` so that its items appear in the same order as `targetOrder`.
+-- Items in `targetOrder` that are not currently in the list are skipped.
 local function applyOrder(
+  self: Sorter,
   list: PropertyList,
   targetOrder: { Data.Item }
 )
@@ -219,6 +103,7 @@ local function applyOrder(
     return
   end
 
+  -- Snapshot current items and their positions in the list.
   local current: { Data.Item } = {}
   local position: { [Data.Item]: number } = {}
   for i = 1, n do
@@ -227,10 +112,22 @@ local function applyOrder(
     position[item] = i
   end
 
-  for i = 1, #targetOrder do
-    local desiredItem = targetOrder[i]
+  -- Build the desired sequence using only items still present in the list,
+  -- preserving the order from targetOrder.
+  local desired: { Data.Item } = {}
+  local desiredCount = 0
+  for _, item in targetOrder do
+    if position[item] ~= nil then
+      desiredCount += 1
+      desired[desiredCount] = item
+    end
+  end
+
+  -- Walk the list left-to-right, swapping the desired item into place.
+  for i = 1, #desired do
+    local desiredItem = desired[i]
     local currentPos = position[desiredItem]
-    if currentPos ~= nil and currentPos ~= i then
+    if currentPos ~= i then
       local displaced = current[i]
       list:swap(i, currentPos)
       current[i] = desiredItem
@@ -239,64 +136,6 @@ local function applyOrder(
       position[displaced] = currentPos
     end
   end
-end
-
-local function applyNoSortDataOrder(self: Sorter)
-  local list = self.list
-  if not list then
-    return
-  end
-
-  local n = list.length
-  if n < 2 or next(self.itemKeys) == nil then
-    captureCurrentOrder(self)
-    captureItemKeys(self)
-    return
-  end
-
-  local previousItemByKey: { [string]: Data.Item } = {}
-  for item, key in self.itemKeys do
-    if key ~= "" then
-      previousItemByKey[key] = item
-    end
-  end
-
-  local target: { Data.Item } = {}
-  local snapshots: { ItemSnapshot } = {}
-  local usedKeys: { [string]: boolean } = {}
-  local usedItems: { [Data.Item]: boolean } = {}
-
-  for i = 1, n do
-    local item = list[i] :: Data.Item
-    local key = getItemKey(item)
-    if key == "" or usedKeys[key] then
-      return
-    end
-
-    local previousItem = previousItemByKey[key]
-    if previousItem ~= nil and not usedItems[previousItem] then
-      target[i] = previousItem
-      usedItems[previousItem] = true
-    else
-      target[i] = item
-      usedItems[item] = true
-    end
-
-    usedKeys[key] = true
-    snapshots[i] = snapshotItem(item)
-  end
-
-  applyOrder(list, target)
-
-  -- HARDCODED VALUE: the widget rewrites leaderboard row data by index.
-  -- After the scripted swap, restore each row's copied leaderboard values.
-  for i = 1, n do
-    local item = list[i] :: Data.Item
-    applySnapshot(item, snapshots[i])
-  end
-
-  captureCurrentOrder(self)
-  captureItemKeys(self)
 end
 
 local function performSort(self: Sorter)
@@ -309,26 +148,39 @@ local function performSort(self: Sorter)
 
   local mode = math.floor(sortType.value)
   local n = list.length
-  if n < 2 or (mode ~= 1 and mode ~= 2) then
+  if n < 2 then
+    return
+  end
+
+  -- sortType 0 → restore the list to its captured original/manual order.
+  if mode == 0 then
+    applyOrder(self, list, self.originalOrder)
+    return
+  end
+
+  -- Only modes 1 (descending) and 2 (ascending) actually sort by stat.
+  if mode ~= 1 and mode ~= 2 then
     return
   end
 
   local statIndex = math.floor(sortByStat.value)
   local ascending = mode == 2
+
+  -- Snapshot current items and their stat values.
   local items: { Data.Item } = {}
   local values: { number } = {}
-
   for i = 1, n do
     local item = list[i] :: Data.Item
     items[i] = item
     values[i] = getStat(item, statIndex)
   end
 
+  -- Build sorted index order. Equal stat values fall back to the captured
+  -- original rank so ties resolve in authored/manual order.
   local order: { number } = {}
   for i = 1, n do
     order[i] = i
   end
-
   local originalRank = self.originalRank
   table.sort(order, function(a: number, b: number): boolean
     local va = values[a]
@@ -348,7 +200,7 @@ local function performSort(self: Sorter)
   for i = 1, n do
     target[i] = items[order[i]]
   end
-  applyOrder(list, target)
+  applyOrder(self, list, target)
 end
 
 local function unsubscribeStatListeners(self: Sorter)
@@ -356,18 +208,6 @@ local function unsubscribeStatListeners(self: Sorter)
     entry.stat:removeListener(entry.cb)
   end
   self.statListeners = {}
-end
-
-local function unsubscribeKeyListeners(self: Sorter)
-  for item, entry in self.keyListeners do
-    if entry.name then
-      entry.name:removeListener(entry.cb)
-    end
-    if entry.id then
-      entry.id:removeListener(entry.cb)
-    end
-  end
-  self.keyListeners = {}
 end
 
 local function subscribeStatListeners(self: Sorter)
@@ -383,7 +223,7 @@ local function subscribeStatListeners(self: Sorter)
   self.trackedStat = statIndex
 
   local function onStatChanged()
-    requestRefresh(self)
+    performSort(self)
   end
 
   for i = 1, list.length do
@@ -396,72 +236,21 @@ local function subscribeStatListeners(self: Sorter)
   end
 end
 
-local function subscribeKeyListeners(self: Sorter)
-  unsubscribeKeyListeners(self)
-
-  local list = self.list
-  if not list then
-    return
-  end
-
-  local function onKeyChanged()
-    requestRefresh(self)
-  end
-
-  for i = 1, list.length do
-    local item = list[i] :: Data.Item
-    local nameProp = item:getString("name")
-    local idProp = item:getString("id")
-    if nameProp or idProp then
-      if nameProp then
-        nameProp:addListener(onKeyChanged)
-      end
-      if idProp then
-        idProp:addListener(onKeyChanged)
-      end
-      self.keyListeners[item] = {
-        name = nameProp,
-        id = idProp,
-        cb = onKeyChanged,
-      }
-    end
-  end
-end
-
-refresh = function(self: Sorter)
-  if self.isRefreshing then
-    return
-  end
-
-  self.isRefreshing = true
-
-  local mode = 0
-  if self.sortType then
-    mode = math.floor(self.sortType.value)
-  end
-
-  if mode == 0 then
-    applyNoSortDataOrder(self)
-  else
-    captureOriginalOrder(self)
-    performSort(self)
-  end
-
+local function refresh(self: Sorter)
+  -- Record any items we haven't seen before BEFORE sorting, so newly added
+  -- items get captured while the list is still in (relatively) authored
+  -- order. Existing items keep their original rank.
+  captureOriginalOrder(self)
   subscribeStatListeners(self)
-  subscribeKeyListeners(self)
-  self.isRefreshing = false
+  performSort(self)
 end
 
 function init(self: Sorter, context: Context): boolean
   self.context = context
   self.statListeners = {}
-  self.keyListeners = {}
   self.trackedStat = 0
   self.originalOrder = {}
   self.originalRank = {}
-  self.itemKeys = {}
-  self.isRefreshing = false
-  self.needsRefresh = false
 
   local vm = context:viewModel() :: Data.Main?
   if not vm then
@@ -473,16 +262,18 @@ function init(self: Sorter, context: Context): boolean
   self.sortByStat = vm:getNumber('sortByStat')
   self.sortType = vm:getNumber('sortType')
 
-  captureCurrentOrder(self)
-  captureItemKeys(self)
+  -- Capture the authored/manual order BEFORE any sort runs. This must
+  -- happen before refresh() so the snapshot reflects the list as the
+  -- designer set it up on the Item view model.
+  captureOriginalOrder(self)
 
   local function onListChanged()
-    requestRefresh(self)
+    refresh(self)
   end
   self.onListChanged = onListChanged
 
   local function onSortChanged()
-    requestRefresh(self)
+    refresh(self)
   end
   self.onSortChanged = onSortChanged
 
@@ -500,15 +291,6 @@ function init(self: Sorter, context: Context): boolean
   return true
 end
 
-function update(self: Sorter)
-  if not self.needsRefresh then
-    return
-  end
-
-  self.needsRefresh = false
-  refresh(self)
-end
-
 return function(): Node<Sorter>
   return {
     vm = nil,
@@ -516,17 +298,12 @@ return function(): Node<Sorter>
     sortByStat = nil,
     sortType = nil,
     statListeners = {},
-    keyListeners = {},
     trackedStat = 0,
     context = nil,
     onListChanged = nil,
     onSortChanged = nil,
     originalOrder = {},
     originalRank = {},
-    itemKeys = {},
-    isRefreshing = false,
-    needsRefresh = false,
     init = init,
-    update = update,
   }
 end

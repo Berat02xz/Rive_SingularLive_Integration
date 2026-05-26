@@ -614,7 +614,6 @@
 
     function handleListUpdate(prop, rawData) {
       const rawStr = typeof rawData === 'string' ? rawData : JSON.stringify(rawData);
-      const dataUnchanged = prop._lastListData === rawStr;
 
       let items;
       try {
@@ -636,6 +635,7 @@
 
       let currentLength = listAcc.length != null ? listAcc.length : 0;
       const newLength = items.length;
+      const dataUnchanged = prop._lastListData === rawStr;
 
       // On the very first update, clear any authored/default instances so items
       // are re-added in Singular's incoming order. Stat-sort tiebreaking in the
@@ -646,6 +646,64 @@
           try { listAcc.removeInstanceAt(i); } catch {}
         }
         currentLength = 0;
+      }
+
+      if (!dataUnchanged && currentLength > newLength) {
+        let oldItems = [];
+        if (prop._lastListData) {
+          try { oldItems = JSON.parse(prop._lastListData); } catch {}
+        }
+
+        let removedByKey = false;
+        if (oldItems.length === currentLength) {
+          const newKeySet = new Set();
+          for (const item of items) { const k = resolveItemKey(item); if (k) newKeySet.add(k); }
+
+          const toRemove = [];
+          for (let i = 0; i < oldItems.length; i++) {
+            const key = resolveItemKey(oldItems[i]);
+            if (key && !newKeySet.has(key)) toRemove.push({ logicalIdx: i, key });
+          }
+
+          if (toRemove.length > 0 && toRemove.length === currentLength - newLength) {
+            const toRemoveWithPos = [];
+            for (const { logicalIdx, key } of toRemove) {
+              let rivePos = -1;
+              const rlen = listAcc.length != null ? listAcc.length : 0;
+              for (let i = 0; i < rlen; i++) {
+                try { if (resolveInstanceKey(listAcc.instanceAt(i)) === key) { rivePos = i; break; } } catch {}
+              }
+              toRemoveWithPos.push({ logicalIdx, rivePos });
+            }
+
+            toRemoveWithPos.sort((a, b) => b.rivePos - a.rivePos);
+            for (const { rivePos } of toRemoveWithPos) {
+              if (rivePos >= 0) try { listAcc.removeInstanceAt(rivePos); } catch {}
+            }
+
+            const removedSet = new Set(toRemoveWithPos.map(x => x.logicalIdx));
+            const newMap = new Map();
+            let newIdx = 0;
+            for (let oldIdx = 0; oldIdx < currentLength; oldIdx++) {
+              if (!removedSet.has(oldIdx)) {
+                const inst = prop.instanceMap.get(oldIdx);
+                if (inst !== undefined) newMap.set(newIdx, inst);
+                newIdx++;
+              }
+            }
+            prop.instanceMap = newMap;
+            currentLength = newLength;
+            removedByKey = true;
+          }
+        }
+
+        if (!removedByKey) {
+          for (let i = currentLength - 1; i >= newLength; i--) {
+            try { listAcc.removeInstanceAt(i); } catch {}
+            prop.instanceMap.delete(i);
+          }
+          currentLength = newLength;
+        }
       }
 
       // Always attempt to reorder instances to match the incoming order, even
@@ -679,12 +737,6 @@
           try { applyPropsToInstance(inst, items[i]); } catch {}
           prop.instanceMap.set(i, inst);
         }
-      }
-
-      // Remove instances from the end if count decreased
-      for (let i = currentLength - 1; i >= newLength; i--) {
-        try { listAcc.removeInstanceAt(i); } catch {}
-        prop.instanceMap.delete(i);
       }
 
       // Add new instances at the end if count increased

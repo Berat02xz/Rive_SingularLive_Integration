@@ -15,15 +15,12 @@ type Sorter = {
   context: Context?,
   onListChanged: (() -> ())?,
   onSortChanged: (() -> ())?,
-  -- Per-item rank captured the first time each item is seen. Used only for
-  -- tiebreaking when two items have equal stat values in sort modes 1/2.
   originalOrder: { Data.Item },
   originalRank: { [Data.Item]: number },
+  previousMode: number,
 }
 
--- Records the order of items that we haven't seen before. Safe to call
--- repeatedly: existing entries are never overwritten, so once an item is
--- recorded its rank is fixed for the lifetime of the script.
+
 local function captureOriginalOrder(self: Sorter)
   local list = self.list
   if not list then
@@ -88,8 +85,7 @@ local function getStatProperty(
   return nil
 end
 
--- Reorder `list` so that its items appear in the same order as `targetOrder`.
--- Items in `targetOrder` that are not currently in the list are skipped.
+
 local function applyOrder(
   self: Sorter,
   list: PropertyList,
@@ -100,7 +96,6 @@ local function applyOrder(
     return
   end
 
-  -- Snapshot current items and their positions in the list.
   local current: { Data.Item } = {}
   local position: { [Data.Item]: number } = {}
   for i = 1, n do
@@ -109,8 +104,7 @@ local function applyOrder(
     position[item] = i
   end
 
-  -- Build the desired sequence using only items still present in the list,
-  -- preserving the order from targetOrder.
+
   local desired: { Data.Item } = {}
   local desiredCount = 0
   for _, item in targetOrder do
@@ -120,7 +114,6 @@ local function applyOrder(
     end
   end
 
-  -- Walk the list left-to-right, swapping the desired item into place.
   for i = 1, #desired do
     local desiredItem = desired[i]
     local currentPos = position[desiredItem]
@@ -149,14 +142,16 @@ local function performSort(self: Sorter)
     return
   end
 
-  -- sortType 0 → no-sort mode. Item order is controlled by the widget via
-  -- list.swap() on the runtime side. The script does nothing here so that
-  -- widget-driven swaps (which trigger this listener) are not undone.
   if mode == 0 then
+    if self.previousMode ~= 0 then
+      applyOrder(self, list, self.originalOrder)
+    end
+    self.previousMode = 0
     return
   end
 
-  -- Only modes 1 (descending) and 2 (ascending) actually sort by stat.
+  self.previousMode = mode
+
   if mode ~= 1 and mode ~= 2 then
     return
   end
@@ -164,7 +159,6 @@ local function performSort(self: Sorter)
   local statIndex = math.floor(sortByStat.value)
   local ascending = mode == 2
 
-  -- Snapshot current items and their stat values.
   local items: { Data.Item } = {}
   local values: { number } = {}
   for i = 1, n do
@@ -173,8 +167,6 @@ local function performSort(self: Sorter)
     values[i] = getStat(item, statIndex)
   end
 
-  -- Build sorted index order. Equal stat values fall back to the captured
-  -- original rank so ties resolve in authored/manual order.
   local order: { number } = {}
   for i = 1, n do
     order[i] = i
@@ -235,9 +227,6 @@ local function subscribeStatListeners(self: Sorter)
 end
 
 local function refresh(self: Sorter)
-  -- Record any items we haven't seen before BEFORE sorting, so newly added
-  -- items get captured while the list is in incoming order. Existing items
-  -- keep their original rank (used for tiebreaking in sort modes 1/2).
   captureOriginalOrder(self)
   subscribeStatListeners(self)
   performSort(self)
@@ -259,10 +248,6 @@ function init(self: Sorter, context: Context): boolean
   self.list = vm.listProperty
   self.sortByStat = vm:getNumber('sortByStat')
   self.sortType = vm:getNumber('sortType')
-
-  -- Capture the authored/manual order BEFORE any sort runs. This must
-  -- happen before refresh() so the snapshot reflects the list as the
-  -- designer set it up on the Item view model.
   captureOriginalOrder(self)
 
   local function onListChanged()
@@ -302,6 +287,7 @@ return function(): Node<Sorter>
     onSortChanged = nil,
     originalOrder = {},
     originalRank = {},
+    previousMode = -1,
     init = init,
   }
 end

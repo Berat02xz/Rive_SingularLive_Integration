@@ -20,7 +20,6 @@ type Sorter = {
   previousMode: number,
 }
 
-
 local function captureOriginalOrder(self: Sorter)
   local list = self.list
   if not list then
@@ -85,7 +84,6 @@ local function getStatProperty(
   return nil
 end
 
-
 local function applyOrder(
   self: Sorter,
   list: PropertyList,
@@ -103,7 +101,6 @@ local function applyOrder(
     current[i] = item
     position[item] = i
   end
-
 
   local desired: { Data.Item } = {}
   local desiredCount = 0

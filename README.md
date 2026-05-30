@@ -43,8 +43,9 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 - Singular MetricFonts -> Rive Font support (Google Fonts Selection)
 - CEF 75 Compatibility support for enterprise software
 
-### V6 Work in progress
+### V6 Released
 - Rive list → Singular table more advanced support for sorting/row deletion/instances etc.
+- Locked on 2.37.8 rive runtime version
 
 ---
 

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "rav-mcp": {
+      "command": "C:\\Users\\berat\\AppData\\Roaming\\app.rive.animation.viewer\\bin\\rav-mcp-rav.exe",
+      "args": [
+        "--stdio-only",
+        "--port",
+        "9274"
+      ]
+    }
+  }
+}

@@ -301,6 +301,9 @@
     function readInstanceProperties(instance) {
       const obj = {};
       for (const _p of instance.properties) {
+        // "__" marks internal convention slots (Save__/Update__ etc.); never expose
+        // them in the generated default JSON shown in Singular.
+        if (_p.name.includes("__")) continue;
         try {
           if (_p.type === "string")       obj[_p.name] = instance.string(_p.name) != null ? instance.string(_p.name).value : "";
           else if (_p.type === "number")  obj[_p.name] = instance.number(_p.name) != null ? instance.number(_p.name).value : 0;

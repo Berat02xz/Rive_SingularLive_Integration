@@ -28,7 +28,7 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 - Multiple layout options
 
 ### V2 Released
-- State machine selection
+- State Machine selection
 - FPS counter for performance testing
 - Image and enum property support
 

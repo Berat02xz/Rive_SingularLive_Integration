@@ -50,13 +50,15 @@
       _findVMNameForInstance: null,
       referencedFontAssets: {},  // fieldId → { asset, assetName }
       metricFontData: {},        // fieldId → { family, weight, subset }
+      referencedAudioAssets: {}, // fieldId → { asset, assetName }
+      audioAssetUrls: {},        // fieldId → url string
 
       layoutOptions: [
         "Contain", "Cover", "Fill", "FitWidth", "FitHeight", "ScaleDown", "Layout", "None",
       ],
       runtimeSources: {
-        webgl2: "https://unpkg.com/@rive-app/webgl2@2.37.8/rive.js",
-        canvas: "https://unpkg.com/@rive-app/canvas@2.37.8/rive.js",
+        webgl2: "https://unpkg.com/@rive-app/webgl2@2.38.0/rive.js",
+        canvas: "https://unpkg.com/@rive-app/canvas@2.38.0/rive.js",
       },
     };
 
@@ -199,6 +201,108 @@
         capturedAsset.setFont(decoded);
       } catch { } finally {
         decoded.unref();
+      }
+    }
+
+    // =========================================================================
+    // Audio loading — URL fetch → Rive decodeAudio / setAudio
+    // =========================================================================
+
+    function audioAssetFieldId(assetName) {
+      const base = assetName.replace(/\.[^.]+$/, "");
+      return "riveaudio" + base.replace(/[^a-zA-Z0-9]/g, "");
+    }
+
+    // Audio assets can be surfaced by the runtime after onLoad has already
+    // built the UI (the audio engine initializes asynchronously); regenerate
+    // so late-registered assets still get their fields.
+    function scheduleAssetUIRefresh() {
+      console.log("[RiveWidget][audio] scheduleAssetUIRefresh called, riveReady =", widgetState.riveReady);
+      if (!widgetState.riveReady) return; // onLoad will build the UI
+      clearTimeout(widgetState._assetUIRefreshTimer);
+      widgetState._assetUIRefreshTimer = setTimeout(() => {
+        console.log("[RiveWidget][audio] regenerating UI for late-registered assets");
+        if (widgetState.riveReady) generateUIModel();
+      }, 100);
+    }
+
+    function normalizeAudioUrl(url) {
+      if (url.startsWith("//")) return "https:" + url;
+      if (!/^(https?:|data:)/.test(url)) return "https://" + url;
+      return url;
+    }
+
+    // url → decoded AudioWrapper. Audio must be applied synchronously inside
+    // assetLoader: Rive scripts (e.g. AudioSound) capture the audio source at
+    // artboard init, so a late async setAudioSource is silently ignored.
+    // The cache keeps its ref for the session, so no unref on apply.
+    const audioDecodedCache = {};
+
+    async function prefetchAudioAssets() {
+      const urls = Object.values(widgetState.audioAssetUrls).filter(Boolean);
+      await Promise.all(urls.map(async (rawUrl) => {
+        const url = normalizeAudioUrl(rawUrl);
+        if (audioDecodedCache[url]) return;
+        try {
+          const res = await fetch(url);
+          if (!res.ok) return;
+          const bytes = new Uint8Array(await res.arrayBuffer());
+          const decoded = await window.rive.decodeAudio(bytes);
+          if (decoded) {
+            audioDecodedCache[url] = decoded;
+            console.log("[RiveWidget][audio] prefetched + decoded", url);
+          }
+        } catch (e) {
+          console.error("[RiveWidget][audio] prefetch failed", url, e);
+        }
+      }));
+    }
+
+    async function fetchAndApplyAudio(fieldId) {
+      const audioInfo = widgetState.referencedAudioAssets[fieldId];
+      const rawUrl = widgetState.audioAssetUrls[fieldId];
+      console.log("[RiveWidget][audio] fetchAndApplyAudio", { fieldId, hasAsset: !!(audioInfo && audioInfo.asset), url: rawUrl });
+      if (!audioInfo || !audioInfo.asset) return;
+
+      if (!rawUrl) return;
+      const url = normalizeAudioUrl(rawUrl);
+
+      const capturedAsset = audioInfo.asset;
+
+      let decoded = audioDecodedCache[url];
+      if (!decoded) {
+        let bytes;
+        try {
+          const res = await fetch(url);
+          console.log("[RiveWidget][audio] fetch result", { url, status: res.status, ok: res.ok });
+          if (!res.ok) return;
+          bytes = new Uint8Array(await res.arrayBuffer());
+          console.log("[RiveWidget][audio] fetched bytes:", bytes.length);
+        } catch (e) {
+          console.error("[RiveWidget][audio] fetch failed", url, e);
+          return;
+        }
+
+        try {
+          decoded = await window.rive.decodeAudio(bytes);
+          console.log("[RiveWidget][audio] decodeAudio result:", decoded);
+        } catch (e) {
+          console.error("[RiveWidget][audio] decodeAudio failed", e);
+          return;
+        }
+        if (!decoded) return;
+        audioDecodedCache[url] = decoded;
+      }
+
+      try {
+        if (!widgetState.referencedAudioAssets[fieldId] || widgetState.referencedAudioAssets[fieldId].asset !== capturedAsset) {
+          console.warn("[RiveWidget][audio] asset went stale before apply, skipping", fieldId);
+          return;
+        }
+        capturedAsset.setAudioSource(decoded);
+        console.log("[RiveWidget][audio] setAudioSource applied for", fieldId);
+      } catch (e) {
+        console.error("[RiveWidget][audio] setAudioSource failed", e);
       }
     }
 
@@ -966,6 +1070,29 @@
       });
     }
 
+    function addReferencedAudioFields(fields, groups) {
+      const audioAssets = Object.values(widgetState.referencedAudioAssets);
+      console.log("[RiveWidget][audio] addReferencedAudioFields — known audio assets at UI build:", audioAssets.map(a => a.fieldId));
+      if (audioAssets.length === 0) return;
+
+      const audioFieldIds = [];
+      for (const { fieldId, assetName } of audioAssets) {
+        const displayName = assetName.replace(/\.[^.]+$/, "");
+        const defaultValue = widgetState.audioAssetUrls[fieldId] || "";
+        fields.push({ id: fieldId, type: "audio", title: displayName, defaultValue });
+        audioFieldIds.push(fieldId);
+      }
+
+      groups.push({
+        id: "riveaudiogroup",
+        title: "Audio",
+        width: "double",
+        toolTip: "Audio overrides for referenced audio assets in the Rive file",
+        activeId: "",
+        childIds: audioFieldIds,
+      });
+    }
+
     function generateUIModel() {
       const fields = [];
       const groupedProperties = {};
@@ -993,6 +1120,7 @@
 
       const groups = buildGroups(availableArtboards, groupedProperties, viewModelParentInfo);
       addReferencedFontFields(fields, groups);
+      addReferencedAudioFields(fields, groups);
       const uiModel = { fields, groups };
       SingularWidget.setCustomWidgetUI(uiModel);
     }
@@ -1023,6 +1151,16 @@
 
         assetLoader: (asset, bytes) => {
           try {
+            console.log("[RiveWidget][assetLoader]", {
+              name: asset.name,
+              fileExtension: asset.fileExtension,
+              isAudio: asset.isAudio,
+              isFont: asset.isFont,
+              isImage: asset.isImage,
+              cdnUuid: asset.cdnUuid,
+              bytesLength: bytes != null ? bytes.length : 0,
+              riveReady: widgetState.riveReady,
+            });
             // Let Rive handle hosted (CDN) and embedded assets
             if ((asset.cdnUuid != null ? asset.cdnUuid.length : 0) > 0 || (bytes != null ? bytes.length : 0) > 0) return false;
 
@@ -1037,6 +1175,27 @@
               fetchAndApplyFont(fieldId);
               return true;
             }
+
+            if (asset.isAudio) {
+              const fieldId = audioAssetFieldId(asset.name);
+              console.log("[RiveWidget][audio] registering audio asset", { fieldId, assetName: asset.name, storedUrl: widgetState.audioAssetUrls[fieldId] });
+              widgetState.referencedAudioAssets[fieldId] = {
+                asset,
+                assetName: asset.name,
+                fieldId,
+              };
+              const rawUrl = widgetState.audioAssetUrls[fieldId];
+              const cached = rawUrl ? audioDecodedCache[normalizeAudioUrl(rawUrl)] : null;
+              if (cached) {
+                // Synchronous apply so artboard scripts see the audio at init
+                asset.setAudioSource(cached);
+                console.log("[RiveWidget][audio] setAudioSource from cache (sync) for", fieldId);
+              } else {
+                fetchAndApplyAudio(fieldId);
+              }
+              scheduleAssetUIRefresh();
+              return true;
+            }
           } catch { }
           return false;
         },
@@ -1044,6 +1203,10 @@
         onLoad: () => {
           clearTimeout(watchdog);
           resizeCanvas();
+
+          try {
+            console.log("[RiveWidget][audio] onLoad — registered audio assets:", Object.keys(widgetState.referencedAudioAssets), "| instance volume:", widgetState.r ? widgetState.r.volume : "n/a");
+          } catch {}
 
           const vmData = getAllViewModelProperties(widgetState.r);
           widgetState.riveProps = vmData.props;
@@ -1081,8 +1244,14 @@
     function reloadRive(fileUrl) {
       document.getElementById("canvas").classList.remove("ready");
       widgetState.referencedFontAssets = {};
+      widgetState.referencedAudioAssets = {};
       if (widgetState.r) { try { widgetState.r.cleanup(); } catch {} widgetState.r = null; }
-      initializeRive(fileUrl);
+      // Decode audio before the file loads so assetLoader can apply it
+      // synchronously; a newer reload supersedes this one while waiting.
+      const gen = (widgetState._reloadGen = (widgetState._reloadGen || 0) + 1);
+      prefetchAudioAssets().finally(() => {
+        if (widgetState._reloadGen === gen) initializeRive(fileUrl);
+      });
     }
 
     // =========================================================================
@@ -1132,8 +1301,26 @@
         if (changed && widgetState.referencedFontAssets[key]) fontDataChanged = true;
         if (widgetState.pendingInitialValues) delete widgetState.pendingInitialValues[key];
       }
-      // Font changes require a full Rive reload so assetLoader re-supplies new font bytes
-      if (fontDataChanged && widgetState.fileUrl) {
+      let audioUrlChanged = false;
+      for (const [key, value] of Object.entries(json)) {
+        if (!key.startsWith("riveaudio")) continue;
+        console.log("[RiveWidget][audio] onSingularValue key:", key, "raw value:", JSON.stringify(value));
+        // "audio" field type is undocumented — tolerate both string and object payloads
+        let url = "";
+        if (typeof value === "string") url = value;
+        else if (value && typeof value === "object") url = value.url || value.src || value.audio || value.file || "";
+        const existing = widgetState.audioAssetUrls[key];
+        const changed = existing !== url;
+        widgetState.audioAssetUrls[key] = url;
+        console.log("[RiveWidget][audio] extracted url:", url, "| previous:", existing, "| changed:", changed, "| assetRegistered:", !!widgetState.referencedAudioAssets[key]);
+        if (changed && widgetState.referencedAudioAssets[key]) audioUrlChanged = true;
+        if (widgetState.pendingInitialValues) delete widgetState.pendingInitialValues[key];
+      }
+      // Font/audio changes require a full Rive reload so assetLoader re-supplies new bytes.
+      // Both key sets are consumed in the same pass so a single reload covers them —
+      // a font-only return here would starve the audio keys into an extra reload cycle.
+      if ((fontDataChanged || audioUrlChanged) && widgetState.fileUrl) {
+        console.log("[RiveWidget][audio] font/audio change → full Rive reload", { fontDataChanged, audioUrlChanged });
         reloadRive(widgetState.fileUrl);
         return;
       }

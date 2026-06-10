@@ -15,6 +15,9 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 - **State Machine Support** – Select and control different state machines dynamically
 - **Live Data Binding** – Update Rive animations in real-time based on Singular.Live data sources
 - **Nested ViewModel Support** – Handles complex Rive files with nested ViewModels and maintains property hierarchy
+- **Audio Asset Support** – Play audio files through Rive audio assets exported as reference type
+- **Font Support** – Render custom fonts using MetricFonts and Google Fonts integration
+
 
 ![Gif](https://github.com/Berat02xz/Rive_SingularLive_Integration/blob/main/zMisc/rive2.gif)
 
@@ -22,30 +25,38 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 ## Release Status
 
 ### V1 Released
-- Artboard selection and real-time property updates
-- Dynamic UI generation
-- WebGL2/Canvas renderer support
+- Artboard selection with real-time property updates
+- Dynamic UI generation from Rive inputs/properties
+- WebGL2 and Canvas renderer support
 - Multiple layout options
 
 ### V2 Released
-- State Machine selection
+- State Machine selection support
 - FPS counter for performance testing
 - Image and enum property support
 
 ### V3 Released
-- Startup flicker removal
-- Rive list → Singular table support
+- Removed startup flicker
+- Basic Rive list → Singular table support
 
 ### V4 Released
-- Locked on 2.37.5 rive runtime version
+- Locked to Rive runtime version 2.37.5
 
 ### V5 Released
-- Singular MetricFonts -> Rive Font support (Google Fonts Selection)
-- CEF 75 Compatibility support for enterprise software
+- Font support in Singular via MetricFonts
+- Google Fonts selection support
+- Rive fonts must be exported as font asset reference type
+- CEF 75 compatibility support for enterprise software
 
 ### V6 Released
-- Rive list → Singular table more advanced support for sorting/row deletion/instances etc.
-- Locked on 2.37.8 rive runtime version
+- Advanced Rive list → Singular table support
+- Sorting, row deletion, instances, and improved table behavior
+- Locked to Rive runtime version 2.37.8
+
+### V7 Development
+- Audio file support via Rive audio assets
+- Rive audio assets must be exported as reference type
+- Locked to Rive runtime version 2.38.0
 
 ---
 

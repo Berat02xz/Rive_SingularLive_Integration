@@ -43,13 +43,19 @@
       fileUrl: "",
       runtime: "",
       stateMachineIndex: 0,
+      _lastArtboardSelection: null,
+      _lastStateMachineSelection: null,
       displayFpsCounter: false,
       pendingInitialValues: null,
       vmMetadata: {},
       defaultVMName: "",
       _findVMNameForInstance: null,
       referencedFontAssets: {},  // fieldId → { asset, assetName }
+      dataBoundFontProperties: {}, // fieldId → { accessor, propertyName, path }
       metricFontData: {},        // fieldId → { family, weight, subset }
+      _fontApplyGeneration: {},  // fieldId → latest async apply generation
+      fallbackFontWrappers: [],  // decoded fonts retained by RiveFont callback
+      fallbackFontRuntime: null,
       referencedAudioAssets: {}, // fieldId → { asset, assetName }
       audioAssetUrls: {},        // fieldId → url string
 
@@ -92,10 +98,24 @@
     }
 
     // =========================================================================
-    // Font loading — Google Fonts TTF via GitHub raw → Rive decodeFont / setFont
+    // Font loading — Singular MetricFont → Google API → GitHub → Inter
     // =========================================================================
 
     const FONT_FALLBACK_URL = "https://cdn.rive.app/runtime/flutter/inter.ttf";
+    const fontBytesCache = new Map();
+    let fallbackFontBytesPromise = null;
+
+    function fetchFallbackFontBytes() {
+      if (!fallbackFontBytesPromise) {
+        fallbackFontBytesPromise = (async () => {
+          const response = await fetch(FONT_FALLBACK_URL);
+          if (!response.ok) throw new Error("Fallback font request failed");
+          return new Uint8Array(await response.arrayBuffer());
+        })();
+        fallbackFontBytesPromise.catch(() => { fallbackFontBytesPromise = null; });
+      }
+      return fallbackFontBytesPromise;
+    }
 
     // Weight number → static TTF style-name suffix used in the Google Fonts GitHub repo
     const WEIGHT_TO_STYLE_NAME = {
@@ -107,6 +127,10 @@
     function fontAssetFieldId(assetName) {
       const base = assetName.replace(/\.[^.]+$/, "");
       return "rivefont" + base.replace(/[^a-zA-Z0-9]/g, "");
+    }
+
+    function dataBoundFontFieldId(propertyName) {
+      return "rivefontprop" + propertyName.replace(/[^a-zA-Z0-9]/g, "");
     }
 
     function parseFontFamilyFromAsset(assetName) {
@@ -132,7 +156,8 @@
             const weightKey = weightStr === "400" ? "regular" : weightStr;
             const fontUrl = item.files[weightKey] || item.files["regular"];
             if (fontUrl) {
-              const fontRes = await fetch(fontUrl);
+              // The Developer API may return http:// URLs; force HTTPS inside Singular.
+              const fontRes = await fetch(fontUrl.replace(/^http:/, "https:"));
               if (fontRes.ok) {
                 return new Uint8Array(await fontRes.arrayBuffer());
               }
@@ -163,27 +188,46 @@
       throw new Error(`No TTF found for "${family}" wght ${weightStr} via API or GitHub`);
     }
 
+    async function resolveFontBytes(metricData) {
+      const family = metricData.family;
+      const weight = String(metricData.weight != null ? metricData.weight : "400");
+      const subset = metricData.subset != null ? metricData.subset : "auto";
+      const cacheKey = `${family}|${weight}|${subset}`;
+
+      if (!fontBytesCache.has(cacheKey)) {
+        const request = (async () => {
+          try {
+            return await fetchGoogleFontBytes(family, weight);
+          } catch {
+            return fetchFallbackFontBytes();
+          }
+        })();
+        fontBytesCache.set(cacheKey, request);
+        request.catch(() => fontBytesCache.delete(cacheKey));
+      }
+
+      const cachedBytes = await fontBytesCache.get(cacheKey);
+      return cachedBytes.slice();
+    }
+
     async function fetchAndApplyFont(fieldId) {
       const fontInfo = widgetState.referencedFontAssets[fieldId];
-      if (!fontInfo || !fontInfo.asset) return;
+      const boundInfo = widgetState.dataBoundFontProperties[fieldId];
+      if ((!fontInfo || !fontInfo.asset) && (!boundInfo || !boundInfo.accessor)) return;
 
       const metricData = widgetState.metricFontData[fieldId];
       if (!metricData || !metricData.family) return;
 
-      const { family, weight = "400" } = metricData;
-      const capturedAsset = fontInfo.asset;
+      const capturedAsset = fontInfo ? fontInfo.asset : null;
+      const capturedAccessor = boundInfo ? boundInfo.accessor : null;
+      const applyGeneration = (widgetState._fontApplyGeneration[fieldId] || 0) + 1;
+      widgetState._fontApplyGeneration[fieldId] = applyGeneration;
 
       let bytes;
       try {
-        bytes = await fetchGoogleFontBytes(family, weight);
+        bytes = await resolveFontBytes(metricData);
       } catch {
-        try {
-          bytes = new Uint8Array(
-            await fetch(FONT_FALLBACK_URL).then((r) => r.arrayBuffer())
-          );
-        } catch {
-          return;
-        }
+        return;
       }
 
       let decoded = null;
@@ -195,13 +239,69 @@
 
       if (!decoded) return;
       try {
-        if (!widgetState.referencedFontAssets[fieldId] || widgetState.referencedFontAssets[fieldId].asset !== capturedAsset) {
-          return;
+        if (widgetState._fontApplyGeneration[fieldId] !== applyGeneration) return;
+
+        const appliedTargets = [];
+        const liveAssetInfo = widgetState.referencedFontAssets[fieldId];
+        if (capturedAsset && liveAssetInfo && liveAssetInfo.asset === capturedAsset) {
+          capturedAsset.setFont(decoded);
+          appliedTargets.push("referenced-asset");
         }
-        capturedAsset.setFont(decoded);
+
+        const liveBoundInfo = widgetState.dataBoundFontProperties[fieldId];
+        if (capturedAccessor && liveBoundInfo && liveBoundInfo.accessor === capturedAccessor) {
+          capturedAccessor.value = decoded;
+          appliedTargets.push("data-bound-property");
+        }
+
+        if (appliedTargets.length > 0) {
+          console.info("[RiveWidget][font] applied live", {
+            fieldId,
+            family: metricData.family,
+            weight: metricData.weight,
+            targets: appliedTargets,
+          });
+        }
       } catch { } finally {
         decoded.unref();
       }
+    }
+
+    function applyStoredDataBoundFonts() {
+      for (const fieldId of Object.keys(widgetState.dataBoundFontProperties)) {
+        if (widgetState.metricFontData[fieldId]) fetchAndApplyFont(fieldId);
+      }
+    }
+
+    function releaseRiveGlyphFallbackFonts() {
+      try {
+        if (window.rive && window.rive.RiveFont) {
+          window.rive.RiveFont.setFallbackFontCallback(null);
+        }
+      } catch {}
+      for (const font of widgetState.fallbackFontWrappers) {
+        try { font.unref(); } catch {}
+      }
+      widgetState.fallbackFontWrappers = [];
+      widgetState.fallbackFontRuntime = null;
+    }
+
+    async function prepareRiveGlyphFallbackFonts() {
+      if (!window.rive || !window.rive.RiveFont || typeof window.rive.RiveFont.setFallbackFontCallback !== "function") return;
+      if (widgetState.fallbackFontRuntime === window.rive && widgetState.fallbackFontWrappers.length > 0) return;
+
+      releaseRiveGlyphFallbackFonts();
+      try {
+        const fallbackFont = await window.rive.decodeFont(
+          (await fetchFallbackFontBytes()).slice()
+        );
+        if (!fallbackFont) return;
+
+        const retainedFallbacks = [fallbackFont];
+        window.rive.RiveFont.setFallbackFontCallback(() => retainedFallbacks);
+        widgetState.fallbackFontWrappers = retainedFallbacks;
+        widgetState.fallbackFontRuntime = window.rive;
+      } catch {}
     }
 
     // =========================================================================
@@ -237,6 +337,13 @@
     // artboard init, so a late async setAudioSource is silently ignored.
     // The cache keeps its ref for the session, so no unref on apply.
     const audioDecodedCache = {};
+
+    function releaseDecodedAudioCache() {
+      for (const url of Object.keys(audioDecodedCache)) {
+        try { audioDecodedCache[url].unref(); } catch {}
+        delete audioDecodedCache[url];
+      }
+    }
 
     async function prefetchAudioAssets() {
       const urls = Object.values(widgetState.audioAssetUrls).filter(Boolean);
@@ -334,6 +441,7 @@
       }
 
       if (widgetState.runtime === desiredRuntime && window.rive) {
+        await prepareRiveGlyphFallbackFonts();
         return;
       }
 
@@ -345,6 +453,13 @@
         try {
           if (existing) existing.remove();
           if (widgetState.r) widgetState.r.cleanup();
+          widgetState.r = null;
+          widgetState.riveReady = false;
+          widgetState.referencedFontAssets = {};
+          widgetState.dataBoundFontProperties = {};
+          widgetState.referencedAudioAssets = {};
+          releaseRiveGlyphFallbackFonts();
+          releaseDecodedAudioCache();
           delete window.rive;
         } catch {}
 
@@ -358,6 +473,8 @@
             try {
               await waitForRiveGlobal();
               widgetState.runtime = desiredRuntime;
+              await prepareRiveGlyphFallbackFonts();
+              await prefetchAudioAssets();
               resolve();
             } catch (e) { reject(e); }
           };
@@ -507,6 +624,7 @@
     function getAllViewModelProperties(riveInst) {
       const props = {};
       const vmMetadata = {};
+      widgetState.dataBoundFontProperties = {};
 
       if (riveInst.viewModelCount === 0) return { props, vmMetadata, defaultVMName: "" };
 
@@ -582,6 +700,7 @@
               case "trigger":  accessor = vmi.trigger(propertyPath);  break;
               case "color":    accessor = vmi.color(propertyPath);    break;
               case "image":    accessor = vmi.image(propertyPath);    break;
+              case "font":     accessor = vmi.font(propertyPath);     break;
               case "enumType": accessor = vmi.enum(propertyPath);     break;
               case "artboard": accessor = vmi.artboard(propertyPath); break;
               case "list":     accessor = vmi.list(propertyPath);     break;
@@ -592,6 +711,14 @@
           if (accessor) {
             const propKey = propertyPath.replace(/\//g, "_");
             const propData = { type: property.type, accessor, path: propertyPath };
+            if (property.type === "font") {
+              propData.fieldId = dataBoundFontFieldId(propKey);
+              widgetState.dataBoundFontProperties[propData.fieldId] = {
+                accessor,
+                propertyName: propKey,
+                path: propertyPath,
+              };
+            }
             if (property.type === "enumType" && accessor.values) propData.enumValues = accessor.values;
             if (property.type === "list") {
               propData.addedInstances = [];
@@ -910,6 +1037,7 @@
 
     function addArtboardField(fields, artboards, currentIndex) {
       if (artboards.length === 0) return;
+      widgetState._lastArtboardSelection = currentIndex.toString();
       fields.push({
         id: "riveartboard", type: "selection", title: "Artboard",
         defaultValue: currentIndex.toString(),
@@ -920,6 +1048,11 @@
     function addStateMachineField(fields) {
       const names = widgetState.r ? widgetState.r.stateMachineNames : undefined;
       if (!names || names.length === 0) return;
+      // A blank name means no state machine was instantiated yet. Keep the
+      // snapshot unset so Singular's initial selection is applied once.
+      widgetState._lastStateMachineSelection = widgetState.stateMachineName
+        ? (widgetState.stateMachineIndex || 0).toString()
+        : null;
       fields.push({
         id: "rivestatemachineselect", type: "selection", title: "State Machine",
         defaultValue: (widgetState.stateMachineIndex || 0).toString(),
@@ -983,6 +1116,7 @@
 
     function buildFieldForProperty(name, displayName, prop, availableArtboards) {
       let fieldType = prop.type, defaultValue = "", selections;
+      const fieldId = prop.fieldId || toAlphanumericId(name);
 
       switch (prop.type) {
         case "trigger":  fieldType = "button"; break;
@@ -990,6 +1124,14 @@
         case "number":   fieldType = "number";   defaultValue = prop.accessor.value != null ? prop.accessor.value : 0; break;
         case "boolean":  fieldType = "checkbox"; defaultValue = prop.accessor.value != null ? prop.accessor.value : false; break;
         case "image":    fieldType = "image"; break;
+        case "font":
+          fieldType = "metricfont";
+          defaultValue = {
+            fontData: widgetState.metricFontData[fieldId] || {
+              family: "Inter", weight: "400", subset: "auto"
+            }
+          };
+          break;
         case "color":    defaultValue = riveColorValueToRGBA(prop.accessor.value); break;
         case "enumType":
           fieldType = "selection"; defaultValue = (prop.accessor.value != null ? prop.accessor.value : 0).toString();
@@ -1005,7 +1147,7 @@
         default: break;
       }
 
-      const field = { id: toAlphanumericId(name), type: fieldType, title: displayName, defaultValue };
+      const field = { id: fieldId, type: fieldType, title: displayName, defaultValue };
       if (fieldType === "number") field.step = "0.1";
       if (fieldType === "json") { field.width = "350"; field.height = "200"; }
       if (selections) field.selections = selections;
@@ -1136,7 +1278,7 @@
       // Watchdog: if onLoad never fires within 5s, retry once
       const watchdog = setTimeout(() => {
         if (!widgetState.riveReady && widgetState._loadGen === loadGen) {
-          reloadRive(widgetState.fileUrl);
+          reloadRive(widgetState.fileUrl, "load-watchdog");
         }
       }, 5000);
 
@@ -1212,6 +1354,7 @@
           widgetState.riveProps = vmData.props;
           widgetState.vmMetadata = vmData.vmMetadata;
           widgetState.defaultVMName = vmData.defaultVMName;
+          applyStoredDataBoundFonts();
 
           generateUIModel();
           ensureFPSCounter(widgetState.r);
@@ -1241,9 +1384,11 @@
       widgetState.r = new rive.Rive(riveConfig);
     }
 
-    function reloadRive(fileUrl) {
+    function reloadRive(fileUrl, reason) {
+      console.warn("[RiveWidget] reloadRive", { reason: reason || "unspecified", fileUrl });
       document.getElementById("canvas").classList.remove("ready");
       widgetState.referencedFontAssets = {};
+      widgetState.dataBoundFontProperties = {};
       widgetState.referencedAudioAssets = {};
       if (widgetState.r) { try { widgetState.r.cleanup(); } catch {} widgetState.r = null; }
       // Decode audio before the file loads so assetLoader can apply it
@@ -1280,10 +1425,12 @@
 
     async function onSingularValue(json) {
       widgetState.pendingInitialValues = widgetState.pendingInitialValues
-        ? { ...widgetState.pendingInitialValues, ...json } : json;
+        ? { ...widgetState.pendingInitialValues, ...json }
+        : { ...json };
 
       // Consumed rivefont* keys are deleted from pendingInitialValues to avoid a reload loop.
       let fontDataChanged = false;
+      const changedFontIds = [];
       for (const [key, value] of Object.entries(json)) {
         if (!key.startsWith("rivefont")) continue;
         var _fontDataRaw = value != null ? value.fontData : undefined; const fontData = _fontDataRaw != null ? _fontDataRaw : value;
@@ -1296,9 +1443,13 @@
         const existing = widgetState.metricFontData[key];
         const changed = !existing ||
           existing.family !== incoming.family ||
-          existing.weight !== incoming.weight;
+          existing.weight !== incoming.weight ||
+          existing.subset !== incoming.subset;
         widgetState.metricFontData[key] = incoming;
-        if (changed && widgetState.referencedFontAssets[key]) fontDataChanged = true;
+        if (changed && (widgetState.referencedFontAssets[key] || widgetState.dataBoundFontProperties[key])) {
+          fontDataChanged = true;
+          changedFontIds.push(key);
+        }
         if (widgetState.pendingInitialValues) delete widgetState.pendingInitialValues[key];
       }
       let audioUrlChanged = false;
@@ -1316,12 +1467,11 @@
         if (changed && widgetState.referencedAudioAssets[key]) audioUrlChanged = true;
         if (widgetState.pendingInitialValues) delete widgetState.pendingInitialValues[key];
       }
-      // Font/audio changes require a full Rive reload so assetLoader re-supplies new bytes.
-      // Both key sets are consumed in the same pass so a single reload covers them —
-      // a font-only return here would starve the audio keys into an extra reload cycle.
-      if ((fontDataChanged || audioUrlChanged) && widgetState.fileUrl) {
-        console.log("[RiveWidget][audio] font/audio change → full Rive reload", { fontDataChanged, audioUrlChanged });
-        reloadRive(widgetState.fileUrl);
+      // Audio changes still require a reload so assetLoader can apply the decoded
+      // source synchronously. Fonts are swapped live below and do not reload Rive.
+      if (audioUrlChanged && widgetState.fileUrl) {
+        console.log("[RiveWidget][audio] audio change → full Rive reload", { audioUrlChanged });
+        reloadRive(widgetState.fileUrl, "audio-change");
         return;
       }
 
@@ -1345,7 +1495,7 @@
             widgetState.artboardName = "";
             widgetState.stateMachineName = "";
             widgetState.stateMachineIndex = 0;
-            if (!widgetState.r) initializeRive(newFileUrl); else reloadRive(newFileUrl);
+            if (!widgetState.r) initializeRive(newFileUrl); else reloadRive(newFileUrl, "file-url-change");
             return;
           }
         } else { return; }
@@ -1368,15 +1518,18 @@
         const newLayout = widgetState.layoutOptions[parseInt(json.rive_layout, 10)] || "Contain";
         if (newLayout !== widgetState.layoutFit) {
           widgetState.layoutFit = newLayout;
-          if (widgetState.r && widgetState.fileUrl) { reloadRive(widgetState.fileUrl); return; }
+          if (widgetState.r && widgetState.fileUrl) { reloadRive(widgetState.fileUrl, "layout-change"); return; }
         }
       }
 
       // Artboard change
       if (json.riveartboard !== undefined && widgetState.r) {
         const artboardIndex = parseInt(json.riveartboard);
+        const incomingSelection = isNaN(artboardIndex) ? "" : artboardIndex.toString();
+        const selectionChanged = incomingSelection !== widgetState._lastArtboardSelection;
+        widgetState._lastArtboardSelection = incomingSelection;
         const file = widgetState.r ? widgetState.r.file : undefined;
-        if (file && artboardIndex >= 0 && artboardIndex < file.artboardCount()) {
+        if (selectionChanged && file && artboardIndex >= 0 && artboardIndex < file.artboardCount()) {
           const artboard = file.artboardByIndex(artboardIndex);
           if (artboard) {
             const newArtboard = typeof artboard.name === "function" ? artboard.name() : artboard.name;
@@ -1384,7 +1537,7 @@
               widgetState.artboardName = newArtboard;
               widgetState.stateMachineName = "";
               widgetState.stateMachineIndex = 0;
-              if (widgetState.fileUrl) { reloadRive(widgetState.fileUrl); return; }
+              if (widgetState.fileUrl) { reloadRive(widgetState.fileUrl, "artboard-change"); return; }
             }
           }
         }
@@ -1393,14 +1546,21 @@
       // State machine change
       if (json.rivestatemachineselect !== undefined && widgetState.r) {
         const smIndex = parseInt(json.rivestatemachineselect);
-        if (!isNaN(smIndex) && smIndex >= 0) {
+        const incomingSelection = isNaN(smIndex) ? "" : smIndex.toString();
+        const selectionChanged = incomingSelection !== widgetState._lastStateMachineSelection;
+        widgetState._lastStateMachineSelection = incomingSelection;
+        if (selectionChanged && !isNaN(smIndex) && smIndex >= 0) {
           widgetState.stateMachineIndex = smIndex;
           var _smArr = widgetState.r.stateMachineNames; var _smVal = _smArr != null ? _smArr[smIndex] : undefined; const newName = _smVal != null ? _smVal : "";
           if (newName !== widgetState.stateMachineName) {
             widgetState.stateMachineName = newName;
-            if (widgetState.fileUrl) { reloadRive(widgetState.fileUrl); return; }
+            if (widgetState.fileUrl) { reloadRive(widgetState.fileUrl, "state-machine-change"); return; }
           }
         }
+      }
+
+      if (fontDataChanged) {
+        await Promise.all(changedFontIds.map((fieldId) => fetchAndApplyFont(fieldId)));
       }
 
       if (!widgetState.r || !widgetState.riveReady) return;
@@ -1422,6 +1582,7 @@
 
     SingularWidget.init({
       onInit: async (json) => {
+        console.info("[RiveWidget] Singular onInit");
         widgetState.pendingInitialValues = json;
         const layoutIndex = parseInt(json.rive_layout, 10);
         widgetState.layoutFit = (widgetState.layoutOptions && widgetState.layoutOptions[layoutIndex]) || widgetState.layoutFit || "Contain";

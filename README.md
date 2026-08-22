@@ -56,7 +56,11 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 ### V7 Development
 - Audio file support via Rive audio assets
 - Rive audio assets must be exported as reference type
-- Locked to Rive runtime version 2.38.0
+- Rive data-bound Font property support with independent Singular MetricFont controls
+- Live font swapping for data-bound and referenced fonts without reloading the `.riv` file
+- Rive runtime glyph fallback support for missing characters
+- Cached Google Fonts API → Google Fonts GitHub → Inter resolution pipeline
+- Locked to Rive runtime version 2.40.1
 
 ---
 

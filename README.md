@@ -15,6 +15,7 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 - **State Machine Support** – Select and control different state machines dynamically
 - **Live Data Binding** – Update Rive animations in real-time based on Singular.Live data sources
 - **Nested ViewModel Support** – Handles complex Rive files with nested ViewModels and maintains property hierarchy
+- **Global ViewModel Support** – Exposes file-wide Global ViewModel properties as top-level Singular control groups
 - **Audio Asset Support** – Play audio files through Rive audio assets exported as reference type
 - **Font Support** – Render custom fonts using MetricFonts and Google Fonts integration
 
@@ -59,6 +60,7 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 - Rive data-bound Font property support with independent Singular MetricFont controls
 - Live font swapping for data-bound and referenced fonts without reloading the `.riv` file
 - Rive runtime glyph fallback support for missing characters
+- Global View Model discovery and Singular controls, grouped above artboard-specific View Models
 - Cached Google Fonts API → Google Fonts GitHub → Inter resolution pipeline
 - Locked to Rive runtime version 2.40.1
 

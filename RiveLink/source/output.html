@@ -49,6 +49,7 @@
       pendingInitialValues: null,
       vmMetadata: {},
       defaultVMName: "",
+      globalViewModelNames: [],
       _findVMNameForInstance: null,
       referencedFontAssets: {},  // fieldId → { asset, assetName }
       dataBoundFontProperties: {}, // fieldId → { accessor, propertyName, path }
@@ -131,6 +132,25 @@
 
     function dataBoundFontFieldId(propertyName) {
       return "rivefontprop" + propertyName.replace(/[^a-zA-Z0-9]/g, "");
+    }
+
+    function stableIdHash(value) {
+      let hash = 2166136261;
+      for (let i = 0; i < value.length; i++) {
+        hash ^= value.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+      }
+      return (hash >>> 0).toString(36);
+    }
+
+    function globalViewModelFieldId(viewModelName, propertyPath, isFont) {
+      const qualifiedName = `${viewModelName}/${propertyPath}`;
+      const readableName = toAlphanumericId(qualifiedName);
+      return `${isFont ? "rivefontglobal" : "riveglobal"}${readableName}${stableIdHash(qualifiedName)}`;
+    }
+
+    function globalViewModelGroupId(viewModelName) {
+      return `riveglobal${toAlphanumericId(viewModelName)}${stableIdHash(viewModelName)}group`;
     }
 
     function parseFontFamilyFromAsset(assetName) {
@@ -622,122 +642,215 @@
     }
 
     function getAllViewModelProperties(riveInst) {
-      const props = {};
+      const normalProps = {};
+      const globalProps = {};
       const vmMetadata = {};
       widgetState.dataBoundFontProperties = {};
 
-      if (riveInst.viewModelCount === 0) return { props, vmMetadata, defaultVMName: "" };
-
-      const _defaultVM = riveInst.defaultViewModel();
-      let vmi = riveInst.viewModelInstance;
-      let defaultVM = _defaultVM;
-
-      if (!defaultVM) return { props, vmMetadata, defaultVMName: "" };
-
-      const _autoHasList = defaultVM.properties.some(p => p.type === "list");
-      if (!_autoHasList || !vmi) {
-        let chosenVM = null;
-        for (let _vi = 0; _vi < riveInst.viewModelCount; _vi++) {
-          const _v = riveInst.viewModelByIndex(_vi);
-          if (_v && _v.properties.some(p => p.type === "list")) { chosenVM = _v; break; }
+      let globalViewModelNames = [];
+      try {
+        if (typeof riveInst.globalViewModelNames === "function") {
+          globalViewModelNames = Array.from(riveInst.globalViewModelNames() || [])
+            .filter((name) => typeof name === "string" && name.length > 0);
         }
-        if (!chosenVM) chosenVM = defaultVM;
-        var _newInstDefault = chosenVM.defaultInstance(); const _newInst = _newInstDefault != null ? _newInstDefault : chosenVM.instance();
-        if (_newInst) {
-          riveInst.bindViewModelInstance(_newInst);
-          vmi = _newInst;
-          defaultVM = chosenVM;
-        } else if (!vmi) {
-          return { props, vmMetadata, defaultVMName: "" };
-        }
-      }
-
-      const defaultVMName = defaultVM.name;
-      const processedVMs = new Set();
+      } catch {}
+      const globalNameSet = new Set(globalViewModelNames);
 
       function findVMNameForInstance(instance) {
         if (!instance) return null;
         try {
+          if (instance.viewModelName) return instance.viewModelName;
           const instanceProps = instance.properties;
-          for (let _vi = 0; _vi < riveInst.viewModelCount; _vi++) {
-            const _vm = riveInst.viewModelByIndex(_vi);
-            if (!_vm) continue;
-            const _vmProps = _vm.properties;
-            if (_vmProps.length !== instanceProps.length) continue;
-            if (instanceProps.every(ip => _vmProps.find(vp => vp.name === ip.name && vp.type === ip.type))) return _vm.name;
+          for (let i = 0; i < riveInst.viewModelCount; i++) {
+            const vm = riveInst.viewModelByIndex(i);
+            if (!vm) continue;
+            const vmProps = vm.properties;
+            if (vmProps.length !== instanceProps.length) continue;
+            if (instanceProps.every(ip => vmProps.find(vp => vp.name === ip.name && vp.type === ip.type))) return vm.name;
           }
         } catch {}
         return null;
       }
 
-      function processViewModel(vm, pathPrefix) {
-        if (processedVMs.has(vm)) return;
-        processedVMs.add(vm);
+      let defaultVM = null;
+      let mainInstance = null;
+      try {
+        defaultVM = riveInst.defaultViewModel();
+        mainInstance = riveInst.viewModelInstance;
+      } catch {}
 
-        for (const property of vm.properties) {
-          const propertyPath = pathPrefix ? `${pathPrefix}/${property.name}` : property.name;
-
-          if (property.type === "viewModel") {
-            let matchedVM = null;
-            for (let i = 0; i < riveInst.viewModelCount; i++) {
-              const nestedVM = riveInst.viewModelByIndex(i);
-              if (!nestedVM || processedVMs.has(nestedVM)) continue;
-              if (nestedVM.name && property.name.includes(nestedVM.name)) { matchedVM = nestedVM; break; }
+      // Preserve the existing list-aware main View Model selection, but never
+      // bind a Global View Model into the artboard's main View Model slot.
+      if (defaultVM) {
+        const autoHasList = defaultVM.properties.some((property) => property.type === "list");
+        if (!autoHasList || !mainInstance) {
+          let chosenVM = null;
+          for (let i = 0; i < riveInst.viewModelCount; i++) {
+            const candidate = riveInst.viewModelByIndex(i);
+            if (candidate && !globalNameSet.has(candidate.name) && candidate.properties.some((property) => property.type === "list")) {
+              chosenVM = candidate;
+              break;
             }
-            if (matchedVM) {
-              vmMetadata[property.name] = { vmName: matchedVM.name, parentProp: property.name, parentVMName: vm.name };
-              processViewModel(matchedVM, property.name);
-            }
-            continue;
           }
-
-          let accessor = null;
+          if (!chosenVM) chosenVM = defaultVM;
           try {
-            switch (property.type) {
-              case "string":   accessor = vmi.string(propertyPath);   break;
-              case "number":   accessor = vmi.number(propertyPath);   break;
-              case "boolean":  accessor = vmi.boolean(propertyPath);  break;
-              case "trigger":  accessor = vmi.trigger(propertyPath);  break;
-              case "color":    accessor = vmi.color(propertyPath);    break;
-              case "image":    accessor = vmi.image(propertyPath);    break;
-              case "font":     accessor = vmi.font(propertyPath);     break;
-              case "enumType": accessor = vmi.enum(propertyPath);     break;
-              case "artboard": accessor = vmi.artboard(propertyPath); break;
-              case "list":     accessor = vmi.list(propertyPath);     break;
-              default: break;
+            const newInstance = chosenVM.defaultInstance() || chosenVM.instance();
+            if (newInstance) {
+              riveInst.bindViewModelInstance(newInstance);
+              mainInstance = newInstance;
+              defaultVM = chosenVM;
             }
-          } catch { }
+          } catch {}
+        }
+      }
 
-          if (accessor) {
+      function propertyAccessor(instance, type, path) {
+        try {
+          switch (type) {
+            case "string":   return instance.string(path);
+            case "number":   return instance.number(path);
+            case "boolean":  return instance.boolean(path);
+            case "trigger":  return instance.trigger(path);
+            case "color":    return instance.color(path);
+            case "image":    return instance.image(path);
+            case "font":     return instance.font(path);
+            case "enumType": return instance.enum(path);
+            case "artboard": return instance.artboard(path);
+            case "list":     return instance.list(path);
+            default:          return null;
+          }
+        } catch {
+          return null;
+        }
+      }
+
+      function collectProperties(rootVM, rootInstance, options) {
+        if (!rootVM || !rootInstance) return;
+
+        function processViewModel(vm, pathPrefix, ancestors) {
+          if (!vm || ancestors.has(vm)) return;
+          const nextAncestors = new Set(ancestors);
+          nextAncestors.add(vm);
+
+          for (const property of vm.properties) {
+            const propertyPath = pathPrefix ? `${pathPrefix}/${property.name}` : property.name;
+
+            if (property.type === "viewModel") {
+              let matchedVM = null;
+              try {
+                const nestedInstance = rootInstance.viewModel(propertyPath);
+                const nestedVMName = findVMNameForInstance(nestedInstance);
+                if (nestedVMName) matchedVM = riveInst.viewModelByName(nestedVMName);
+              } catch {}
+              if (!matchedVM) {
+                for (let i = 0; i < riveInst.viewModelCount; i++) {
+                  const candidate = riveInst.viewModelByIndex(i);
+                  if (!candidate || nextAncestors.has(candidate)) continue;
+                  if (candidate.name && property.name.includes(candidate.name)) {
+                    matchedVM = candidate;
+                    break;
+                  }
+                }
+              }
+              if (matchedVM) {
+                if (!options.isGlobal) {
+                  vmMetadata[property.name] = {
+                    vmName: matchedVM.name,
+                    parentProp: property.name,
+                    parentVMName: vm.name,
+                  };
+                }
+                processViewModel(matchedVM, propertyPath, nextAncestors);
+              }
+              continue;
+            }
+
+            const propertyType = property.type === "enum" ? "enumType" : property.type;
+            const accessor = propertyAccessor(rootInstance, propertyType, propertyPath);
+            if (!accessor) continue;
+
             const propKey = propertyPath.replace(/\//g, "_");
-            const propData = { type: property.type, accessor, path: propertyPath };
-            if (property.type === "font") {
-              propData.fieldId = dataBoundFontFieldId(propKey);
+            const storageKey = options.isGlobal
+              ? `global:${options.viewModelName}:${propertyPath}`
+              : propKey;
+            const propData = {
+              type: propertyType,
+              accessor,
+              path: propertyPath,
+              ownerInstance: rootInstance,
+            };
+
+            if (options.isGlobal) {
+              propData.isGlobal = true;
+              propData.globalViewModelName = options.viewModelName;
+              propData.displayName = pathPrefix
+                ? `${pathPrefix.replace(/\//g, " · ")} · ${property.name}`
+                : property.name;
+              propData.fieldId = globalViewModelFieldId(
+                options.viewModelName,
+                propertyPath,
+                propertyType === "font"
+              );
+            }
+
+            if (propertyType === "font") {
+              if (!propData.fieldId) propData.fieldId = dataBoundFontFieldId(propKey);
               widgetState.dataBoundFontProperties[propData.fieldId] = {
                 accessor,
-                propertyName: propKey,
+                propertyName: storageKey,
                 path: propertyPath,
+                globalViewModelName: options.isGlobal ? options.viewModelName : null,
               };
             }
-            if (property.type === "enumType" && accessor.values) propData.enumValues = accessor.values;
-            if (property.type === "list") {
+            if (propertyType === "enumType" && accessor.values) propData.enumValues = accessor.values;
+            if (propertyType === "list") {
               propData.addedInstances = [];
               if ((accessor.length != null ? accessor.length : 0) > 0) {
                 try {
-                  const firstItem = accessor.instanceAt(0);
-                  const detected = findVMNameForInstance(firstItem);
+                  const detected = findVMNameForInstance(accessor.instanceAt(0));
                   if (detected) propData.itemVMName = detected;
                 } catch {}
               }
             }
-            props[propKey] = propData;
+            options.target[storageKey] = propData;
           }
         }
+
+        processViewModel(rootVM, "", new Set());
       }
 
-      processViewModel(defaultVM, "");
+      // Discover globals after any main-instance rebind so these accessors point
+      // at the final auto-bound Global View Model instances.
+      const discoveredGlobalNames = [];
+      for (const viewModelName of globalViewModelNames) {
+        let vm = null;
+        let instance = null;
+        try { vm = riveInst.viewModelByName(viewModelName); } catch {}
+        try { instance = riveInst.globalViewModelInstance(viewModelName); } catch {}
+        const beforeCount = Object.keys(globalProps).length;
+        collectProperties(vm, instance, {
+          isGlobal: true,
+          viewModelName,
+          target: globalProps,
+        });
+        if (Object.keys(globalProps).length > beforeCount) discoveredGlobalNames.push(viewModelName);
+      }
+
+      if (defaultVM && mainInstance) {
+        collectProperties(defaultVM, mainInstance, {
+          isGlobal: false,
+          viewModelName: defaultVM.name,
+          target: normalProps,
+        });
+      }
+
       widgetState._findVMNameForInstance = findVMNameForInstance;
-      return { props, vmMetadata, defaultVMName };
+      return {
+        props: { ...globalProps, ...normalProps },
+        vmMetadata,
+        defaultVMName: defaultVM ? defaultVM.name : "",
+        globalViewModelNames: discoveredGlobalNames,
+      };
     }
 
     // =========================================================================
@@ -877,7 +990,7 @@
         return;
       }
 
-      const vmi = widgetState.r.viewModelInstance;
+      const vmi = prop.ownerInstance || widgetState.r.viewModelInstance;
       if (!vmi) return;
       var _listResult = vmi.list(prop.path); const listAcc = _listResult != null ? _listResult : prop.accessor;
 
@@ -1154,13 +1267,27 @@
       return field;
     }
 
-    function buildGroups(availableArtboards, groupedProperties, viewModelParentInfo) {
+    function buildGroups(availableArtboards, globalGroupedProperties, groupedProperties, viewModelParentInfo) {
       const groups = [];
 
       if (availableArtboards.length > 0) {
         const childIds = ["riveartboard"];
         if (widgetState.r && widgetState.r.stateMachineNames && widgetState.r.stateMachineNames.length > 0) childIds.push("rivestatemachineselect");
         groups.push({ id: "artboardgroup", title: "Artboard Selection", width: "double", toolTip: "Select the artboard to display", childIds });
+      }
+
+      // Global View Models are file-wide and intentionally appear before the
+      // artboard-specific and nested View Model groups.
+      for (const viewModelName of widgetState.globalViewModelNames) {
+        const childIds = globalGroupedProperties[viewModelName];
+        if (!childIds || childIds.length === 0) continue;
+        groups.push({
+          id: globalViewModelGroupId(viewModelName),
+          title: `${viewModelName} (Global)`,
+          width: "double",
+          toolTip: `File-wide properties from ${viewModelName}`,
+          childIds,
+        });
       }
 
       for (const [groupKey, childIds] of Object.entries(groupedProperties)) {
@@ -1237,6 +1364,7 @@
 
     function generateUIModel() {
       const fields = [];
+      const globalGroupedProperties = {};
       const groupedProperties = {};
       const viewModelParentInfo = {};
 
@@ -1249,18 +1377,32 @@
       // Dynamic property fields
       for (const [name, prop] of Object.entries(widgetState.riveProps)) {
         if (name.includes("__")) continue;
-        const displayName = name.includes("_") ? name.split("_").pop() : name;
-        const { groupKey, viewModelName, parentPropertyName } = resolveGroupInfo(name);
-        if (!viewModelParentInfo[groupKey]) viewModelParentInfo[groupKey] = { vmName: viewModelName, parentProp: parentPropertyName };
+        let displayName;
+        let groupKey;
+        if (prop.isGlobal) {
+          displayName = prop.displayName;
+          groupKey = prop.globalViewModelName;
+        } else {
+          displayName = name.includes("_") ? name.split("_").pop() : name;
+          const groupInfo = resolveGroupInfo(name);
+          groupKey = groupInfo.groupKey;
+          if (!viewModelParentInfo[groupKey]) {
+            viewModelParentInfo[groupKey] = {
+              vmName: groupInfo.viewModelName,
+              parentProp: groupInfo.parentPropertyName,
+            };
+          }
+        }
         const field = buildFieldForProperty(name, displayName, prop, availableArtboards);
         if (field) {
           fields.push(field);
-          if (!groupedProperties[groupKey]) groupedProperties[groupKey] = [];
-          groupedProperties[groupKey].push(field.id);
+          const targetGroups = prop.isGlobal ? globalGroupedProperties : groupedProperties;
+          if (!targetGroups[groupKey]) targetGroups[groupKey] = [];
+          targetGroups[groupKey].push(field.id);
         }
       }
 
-      const groups = buildGroups(availableArtboards, groupedProperties, viewModelParentInfo);
+      const groups = buildGroups(availableArtboards, globalGroupedProperties, groupedProperties, viewModelParentInfo);
       addReferencedFontFields(fields, groups);
       addReferencedAudioFields(fields, groups);
       const uiModel = { fields, groups };
@@ -1354,6 +1496,7 @@
           widgetState.riveProps = vmData.props;
           widgetState.vmMetadata = vmData.vmMetadata;
           widgetState.defaultVMName = vmData.defaultVMName;
+          widgetState.globalViewModelNames = vmData.globalViewModelNames;
           applyStoredDataBoundFonts();
 
           generateUIModel();
@@ -1405,7 +1548,7 @@
 
     function updateDynamicProperties(json) {
       for (const [name, prop] of Object.entries(widgetState.riveProps)) {
-        const id = toAlphanumericId(name);
+        const id = prop.fieldId || toAlphanumericId(name);
         if (json[id] === undefined) continue;
         try {
           const value = json[id];
@@ -1569,7 +1712,8 @@
 
     function onSingularButtonClicked(action) {
       for (const [name, prop] of Object.entries(widgetState.riveProps)) {
-        if (toAlphanumericId(name) === action && prop && prop.type === "trigger") {
+        const fieldId = prop.fieldId || toAlphanumericId(name);
+        if (fieldId === action && prop && prop.type === "trigger") {
           prop.accessor.trigger();
           return;
         }

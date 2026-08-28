@@ -1283,7 +1283,7 @@
         if (!childIds || childIds.length === 0) continue;
         groups.push({
           id: globalViewModelGroupId(viewModelName),
-          title: `${viewModelName} (Global)`,
+          title: `${viewModelName} : Global View Model`,
           width: "double",
           toolTip: `File-wide properties from ${viewModelName}`,
           childIds,
@@ -1308,7 +1308,7 @@
           groupTitle = vmName;
         }
 
-        groups.push({ id: toAlphanumericId(groupKey) + "group", title: groupTitle, width: "double", toolTip: `Properties from ${vmName}`, childIds });
+        groups.push({ id: toAlphanumericId(groupKey) + "group", title: `${groupTitle} : View Model`, width: "double", toolTip: `Properties from ${vmName}`, childIds });
       }
       return groups;
     }

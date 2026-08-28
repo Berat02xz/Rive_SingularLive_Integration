@@ -54,7 +54,7 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 - Sorting, row deletion, instances, and improved table behavior
 - Locked to Rive runtime version 2.37.8
 
-### V7 Development
+### V7 Released
 - Audio file support via Rive audio assets
 - Rive audio assets must be exported as reference type
 - Rive data-bound Font property support with independent Singular MetricFont controls
@@ -63,6 +63,8 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 - Global View Model discovery and Singular controls, grouped above artboard-specific View Models
 - Cached Google Fonts API → Google Fonts GitHub → Inter resolution pipeline
 - Locked to Rive runtime version 2.40.1
+
+## V8
 
 ---
 

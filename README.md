@@ -65,7 +65,10 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 - Locked to Rive runtime version 2.40.1
 
 ## V8
-
+- Locket ro Rive runtime 2.44.0
+- Image loading now rejects failed http responses, such as 404 and unsuccessful decoding.
+- Call .play() after assigning an image
+- 
 ---
 
 ### 🧪 Note  

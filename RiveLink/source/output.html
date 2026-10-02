@@ -64,8 +64,8 @@
         "Contain", "Cover", "Fill", "FitWidth", "FitHeight", "ScaleDown", "Layout", "None",
       ],
       runtimeSources: {
-        webgl2: "https://unpkg.com/@rive-app/webgl2@2.40.1/rive.js",
-        canvas: "https://unpkg.com/@rive-app/canvas@2.40.1/rive.js",
+        webgl2: "https://unpkg.com/@rive-app/webgl2@2.44.0/rive.js",
+        canvas: "https://unpkg.com/@rive-app/canvas@2.44.0/rive.js",
       },
     };
 
@@ -93,9 +93,20 @@
       if (!/^(https?:|data:)/.test(url)) return "https://" + url;
       return url;
     }
-    async function decodeImageFromUrl(url) {
+    async function decodeImageFromUrl(url, runtime = window.rive) {
       const res = await fetch(url);
-      return window.rive.decodeImage(new Uint8Array(await res.arrayBuffer()));
+      if (!res.ok) throw new Error(`Image request failed: HTTP ${res.status}`);
+      const image = await runtime.decodeImage(new Uint8Array(await res.arrayBuffer()));
+      if (!image) throw new Error("Rive could not decode the image");
+      return image;
+    }
+
+    function resumeAfterImageUpdate(instance) {
+      if (instance && instance === widgetState.r) {
+        // Resume after the async assignment, including when isPlaying is true.
+        // play() preserves the existing state machine and its transition state.
+        instance.play(widgetState.stateMachineName || undefined);
+      }
     }
 
     // =========================================================================
@@ -610,6 +621,8 @@
       const imgAcc = inst.image(key);
       if (!imgAcc) return;
       const url = normalizeImageUrl(rawUrl);
+      const instance = widgetState.r;
+      const runtime = window.rive;
 
       let seen = instanceImageUrls.get(inst);
       if (!seen) { seen = {}; instanceImageUrls.set(inst, seen); }
@@ -625,18 +638,21 @@
           const beforeAcc = inst.image(key + "__");
           const trigger = inst.trigger ? inst.trigger(key + "Update__") : null;
           if (isChange) {
-            const fetchOld = beforeAcc ? decodeImageFromUrl(prevUrl).catch(() => null) : Promise.resolve(null);
-            const [oldImage, newImage] = await Promise.all([fetchOld, decodeImageFromUrl(url)]);
+            const fetchOld = beforeAcc ? decodeImageFromUrl(prevUrl, runtime).catch(() => null) : Promise.resolve(null);
+            const [oldImage, newImage] = await Promise.all([fetchOld, decodeImageFromUrl(url, runtime)]);
+            if (instance !== widgetState.r) return;
             if (beforeAcc && oldImage) beforeAcc.value = oldImage;
             imgAcc.value = newImage;
             if (trigger && typeof trigger.trigger === "function") trigger.trigger();
           } else {
-            const image = await decodeImageFromUrl(url);
+            const image = await decodeImageFromUrl(url, runtime);
+            if (instance !== widgetState.r) return;
             imgAcc.value = image;
             if (beforeAcc) beforeAcc.value = image;
           }
           seen[key] = url;
           if (histKey) imageUrlHistory[histKey] = url;
+          resumeAfterImageUpdate(instance);
         } catch {}
       })();
     }
@@ -864,12 +880,31 @@
     function handleImageUpdate(name, prop, imageUrl) {
       if (!imageUrl || imageUrl === "") return;
       imageUrl = normalizeImageUrl(imageUrl);
-      if (prop.currentImageUrl === imageUrl) return;
-      prop.currentImageUrl = imageUrl;
-      (async () => {
+      if (prop.pendingImageUrl === imageUrl) return;
+      const requestGeneration = (prop.imageRequestGeneration || 0) + 1;
+      prop.imageRequestGeneration = requestGeneration;
+      prop.pendingImageUrl = imageUrl;
+      // A return to the applied URL must also cancel a pending different URL.
+      if (prop.currentImageUrl === imageUrl) {
+        prop.pendingImageUrl = null;
+        return;
+      }
+      const instance = widgetState.r;
+      const runtime = window.rive;
+      return (async () => {
         try {
-          prop.accessor.value = await decodeImageFromUrl(imageUrl);
-        } catch {}
+          const image = await decodeImageFromUrl(imageUrl, runtime);
+          if (instance !== widgetState.r || requestGeneration !== prop.imageRequestGeneration) return;
+          prop.accessor.value = image;
+          prop.currentImageUrl = imageUrl;
+          resumeAfterImageUpdate(instance);
+        } catch (error) {
+          if (instance === widgetState.r && requestGeneration === prop.imageRequestGeneration) {
+            console.warn("[RiveWidget] image apply failed:", { name, path: prop.path, error });
+          }
+        } finally {
+          if (requestGeneration === prop.imageRequestGeneration) prop.pendingImageUrl = null;
+        }
       })();
     }
 

@@ -1419,6 +1419,20 @@
       return field;
     }
 
+    function buildViewModelGroupTitle(groupInfo) {
+      if (!groupInfo.path) return groupInfo.vmName;
+      const rootMetadata = widgetState.vmMetadata[""];
+      const rootName = (rootMetadata && rootMetadata.vmName) || widgetState.defaultVMName || groupInfo.vmName;
+      let nestedPath = "";
+      const nesting = groupInfo.path.split("/").map(propertyName => {
+        nestedPath = nestedPath ? `${nestedPath}/${propertyName}` : propertyName;
+        const metadata = widgetState.vmMetadata[nestedPath];
+        const vmName = (metadata && metadata.vmName) || (nestedPath === groupInfo.path ? groupInfo.vmName : null);
+        return vmName ? `${propertyName} : ${vmName}` : propertyName;
+      });
+      return `${rootName} (${nesting.join(" → ")})`;
+    }
+
     function buildGroups(availableArtboards, globalGroupedProperties, groupedProperties, viewModelParentInfo) {
       const groups = [];
 
@@ -1446,9 +1460,15 @@
         const groupInfo = viewModelParentInfo[groupKey];
         const vmName = groupInfo.vmName;
         const path = groupInfo.path;
-        const groupTitle = path ? `${path.replace(/\//g, " → ")} (${vmName})` : vmName;
+        const groupTitle = buildViewModelGroupTitle(groupInfo);
         const groupIdKey = `${widgetState.defaultVMName}:${path}`;
-        groups.push({ id: `rivevm${toAlphanumericId(groupIdKey)}${stableIdHash(groupIdKey)}group`, title: `${groupTitle} : View Model`, width: "double", toolTip: `Properties from ${vmName}`, childIds });
+        groups.push({
+          id: `rivevm${toAlphanumericId(groupIdKey)}${stableIdHash(groupIdKey)}group`,
+          title: `${groupTitle} : View Model`,
+          width: "double",
+          toolTip: path ? `Properties from ${vmName} at ${path}` : `Properties from ${vmName}`,
+          childIds,
+        });
       }
       return groups;
     }

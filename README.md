@@ -26,49 +26,53 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 ## Release Status
 
 ### V1 Released
-- Artboard selection with real-time property updates
-- Dynamic UI generation from Rive inputs/properties
-- WebGL2 and Canvas renderer support
-- Multiple layout options
+
+- **Artboards:** Select the artboard to display and update its properties live.
+- **Dynamic controls:** Generate Singular UI controls from Rive inputs and properties.
+- **Rendering:** Choose between WebGL2 and Canvas renderers.
+- **Layout:** Select how the animation fits within the widget.
 
 ### V2 Released
-- State Machine selection support
-- FPS counter for performance testing
-- Image and enum property support
+
+- **State machines:** Select the state machine to run on the active artboard.
+- **Performance:** Display an FPS counter for rendering checks.
+- **Properties:** Control image and enum properties from Singular.
 
 ### V3 Released
-- Removed startup flicker
-- Basic Rive list → Singular table support
+
+- **Startup:** Removed flicker while the animation loads.
+- **Lists:** Added initial support for connecting Rive lists to Singular table data.
 
 ### V4 Released
-- Locked to Rive runtime version 2.37.5
+
+- **Runtime:** Pinned the Rive runtime to `2.37.5`.
 
 ### V5 Released
-- Font support in Singular via MetricFonts
-- Google Fonts selection support
-- Rive fonts must be exported as font asset reference type
-- CEF 75 compatibility support for enterprise software
+
+- **Fonts:** Added Singular MetricFont controls, including Google Fonts selection.
+- **Asset setup:** Export Rive font assets as references to use these font controls.
+- **Compatibility:** Added support for enterprise software using CEF 75.
 
 ### V6 Released
-- Advanced Rive list → Singular table support
-- Sorting, row deletion, instances, and improved table behavior
-- Locked to Rive runtime version 2.37.8
+
+- **Lists:** Improved Rive list integration with Singular table data, including sorting, row deletion, and instance management.
+- **Runtime:** Pinned the Rive runtime to `2.37.8`.
 
 ### V7 Released
-- Audio file support via Rive audio assets
-- Rive audio assets must be exported as reference type
-- Rive data-bound Font property support with independent Singular MetricFont controls
-- Live font swapping for data-bound and referenced fonts without reloading the `.riv` file
-- Rive runtime glyph fallback support for missing characters
-- Global View Model discovery and Singular controls, grouped above artboard-specific View Models
-- Cached Google Fonts API → Google Fonts GitHub → Inter resolution pipeline
-- Locked to Rive runtime version 2.40.1
+
+- **Audio:** Added playback through Rive audio assets. Export audio assets as references to use this feature.
+- **Font properties:** Added independent Singular MetricFont controls for Rive data-bound font properties.
+- **Live fonts:** Swap referenced and data-bound fonts without reloading the `.riv` file.
+- **Missing characters:** Added runtime glyph fallback support.
+- **Global controls:** Discover file-wide global View Models and display their controls above artboard-specific groups.
+- **Font loading:** Cache font requests and try the Google Fonts API, the Google Fonts GitHub repository, then Inter as a fallback.
+- **Runtime:** Pinned the Rive runtime to `2.40.1`.
 
 ### V8
 
 - **Runtime:** Pinned WebGL2 and Canvas to Rive runtime `2.44.0`, which includes Rive Semantics support.
 - **Images:** Reject failed HTTP responses and image decoding errors. Call `.play()` after assigning an image so a settled state machine can process the change.
-- **Dynamic controls:** Generate controls from the selected artboard's bound View Model, with nested properties and separate global View Model groups.
+- **Dynamic controls:** Generate controls from the selected artboard's bound View Model, with nested properties and separate global View Model groups. Nested group titles show the parent model, property name, and child model.
 - **List rendering:** Preserve authored rows and create added rows from the View Model's default instance, retaining fonts, styles, and internal animation values.
 - **JSON binding:** Assign values using the declared Rive property type. Numeric strings such as `"12.5"` now update number properties correctly; boolean strings are also handled explicitly.
 - **Table data:** Accept row arrays, single-row objects, and table arrays wrapped under a Control Node ID.

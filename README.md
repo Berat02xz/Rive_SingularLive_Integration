@@ -64,12 +64,16 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 - Cached Google Fonts API → Google Fonts GitHub → Inter resolution pipeline
 - Locked to Rive runtime version 2.40.1
 
-## V8
-- Locket ro Rive runtime 2.44.0
-- Image loading now rejects failed http responses, such as 404 and unsuccessful decoding.
-- Call .play() after assigning an image
-- Semantics supported
-- Reworked Dynamic UI generation with View Model Properties (Nested & Global VM supported)
+### V8
+
+- **Runtime:** Pinned WebGL2 and Canvas to Rive runtime `2.44.0`, which includes Rive Semantics support.
+- **Images:** Reject failed HTTP responses and image decoding errors. Call `.play()` after assigning an image so a settled state machine can process the change.
+- **Dynamic controls:** Generate controls from the selected artboard's bound View Model, with nested properties and separate global View Model groups.
+- **List rendering:** Preserve authored rows and create added rows from the View Model's default instance, retaining fonts, styles, and internal animation values.
+- **JSON binding:** Assign values using the declared Rive property type. Numeric strings such as `"12.5"` now update number properties correctly; boolean strings are also handled explicitly.
+- **Table data:** Accept row arrays, single-row objects, and table arrays wrapped under a Control Node ID.
+- **Nested row data:** Support nested View Model objects and enum values in list JSON.
+- **Internal properties:** Hide properties containing `__` from the generated controls and default JSON, and protect them from public JSON writes while their Rive bindings remain active.
 
 ---
 
@@ -77,8 +81,7 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 This project is constantly evolving with ongoing bug fixes and improvements in collaboration with the Singular team.  
 
 
-Planned:
-- Implement GPU Canvas, but for that to be implemented, useOffScreenRenderer needs to be off, which is what enables sharing context across multiple instances, reduces memory usage when displaying multiple Rive instances on a single web page, Stateful Components
-- Patch View Model showing groups with Dynamic UI, proper nesting support
-- hide "__" in both json and on view model properties from being shown or controlled
-- Json fix numbers being shown as numbers instead of string, counter and normalized numbers give numbers, number gives string, maybe a decimal support problem. (test problem first)
+### Planned
+
+- Explore GPU Canvas and stateful component support, including the effect of disabling `useOffscreenRenderer` on context sharing and memory usage.
+- Verify how Singular's Number, Normalized Number, and Counter controls serialize table values.

@@ -101,9 +101,9 @@
       return image;
     }
 
-    function resumeAfterImageUpdate(instance) {
+    function resumeAfterPropertyUpdate(instance) {
       if (instance && instance === widgetState.r) {
-        // Resume after the async assignment, including when isPlaying is true.
+        // Resume after image/list assignments, including when isPlaying is true.
         // play() preserves the existing state machine and its transition state.
         instance.play(widgetState.stateMachineName || undefined);
       }
@@ -272,26 +272,14 @@
       try {
         if (widgetState._fontApplyGeneration[fieldId] !== applyGeneration) return;
 
-        const appliedTargets = [];
         const liveAssetInfo = widgetState.referencedFontAssets[fieldId];
         if (capturedAsset && liveAssetInfo && liveAssetInfo.asset === capturedAsset) {
           capturedAsset.setFont(decoded);
-          appliedTargets.push("referenced-asset");
         }
 
         const liveBoundInfo = widgetState.dataBoundFontProperties[fieldId];
         if (capturedAccessor && liveBoundInfo && liveBoundInfo.accessor === capturedAccessor) {
           capturedAccessor.value = decoded;
-          appliedTargets.push("data-bound-property");
-        }
-
-        if (appliedTargets.length > 0) {
-          console.info("[RiveWidget][font] applied live", {
-            fieldId,
-            family: metricData.family,
-            weight: metricData.weight,
-            targets: appliedTargets,
-          });
         }
       } catch { } finally {
         decoded.unref();
@@ -348,11 +336,9 @@
     // built the UI (the audio engine initializes asynchronously); regenerate
     // so late-registered assets still get their fields.
     function scheduleAssetUIRefresh() {
-      console.log("[RiveWidget][audio] scheduleAssetUIRefresh called, riveReady =", widgetState.riveReady);
       if (!widgetState.riveReady) return; // onLoad will build the UI
       clearTimeout(widgetState._assetUIRefreshTimer);
       widgetState._assetUIRefreshTimer = setTimeout(() => {
-        console.log("[RiveWidget][audio] regenerating UI for late-registered assets");
         if (widgetState.riveReady) generateUIModel();
       }, 100);
     }
@@ -388,7 +374,6 @@
           const decoded = await window.rive.decodeAudio(bytes);
           if (decoded) {
             audioDecodedCache[url] = decoded;
-            console.log("[RiveWidget][audio] prefetched + decoded", url);
           }
         } catch (e) {
           console.error("[RiveWidget][audio] prefetch failed", url, e);
@@ -399,7 +384,6 @@
     async function fetchAndApplyAudio(fieldId) {
       const audioInfo = widgetState.referencedAudioAssets[fieldId];
       const rawUrl = widgetState.audioAssetUrls[fieldId];
-      console.log("[RiveWidget][audio] fetchAndApplyAudio", { fieldId, hasAsset: !!(audioInfo && audioInfo.asset), url: rawUrl });
       if (!audioInfo || !audioInfo.asset) return;
 
       if (!rawUrl) return;
@@ -412,10 +396,8 @@
         let bytes;
         try {
           const res = await fetch(url);
-          console.log("[RiveWidget][audio] fetch result", { url, status: res.status, ok: res.ok });
           if (!res.ok) return;
           bytes = new Uint8Array(await res.arrayBuffer());
-          console.log("[RiveWidget][audio] fetched bytes:", bytes.length);
         } catch (e) {
           console.error("[RiveWidget][audio] fetch failed", url, e);
           return;
@@ -423,7 +405,6 @@
 
         try {
           decoded = await window.rive.decodeAudio(bytes);
-          console.log("[RiveWidget][audio] decodeAudio result:", decoded);
         } catch (e) {
           console.error("[RiveWidget][audio] decodeAudio failed", e);
           return;
@@ -438,7 +419,6 @@
           return;
         }
         capturedAsset.setAudioSource(decoded);
-        console.log("[RiveWidget][audio] setAudioSource applied for", fieldId);
       } catch (e) {
         console.error("[RiveWidget][audio] setAudioSource failed", e);
       }
@@ -550,8 +530,18 @@
     // ViewModel — read / write / discover
     // =========================================================================
 
-    function readInstanceProperties(instance) {
+    function sameViewModelInstance(a, b) {
+      if (a === b) return true;
+      try {
+        const an = a.nativeInstance, bn = b.nativeInstance;
+        return !!(an && bn && (an === bn || (typeof an.isAliasOf === "function" && an.isAliasOf(bn))));
+      } catch { return false; }
+    }
+
+    function readInstanceProperties(instance, ancestors = []) {
       const obj = {};
+      if (!instance || ancestors.length >= 64 || ancestors.some(parent => sameViewModelInstance(parent, instance))) return obj;
+      const nextAncestors = [...ancestors, instance];
       for (const _p of instance.properties) {
         // "__" marks internal convention slots (Save__/Update__ etc.); never expose
         // them in the generated default JSON shown in Singular.
@@ -571,48 +561,86 @@
             }
           }
           else if (_p.type === "image") { obj[_p.name] = ""; }
+          else if (_p.type === "enumType" || _p.type === "enum") {
+            const accessor = instance.enum(_p.name);
+            if (accessor) obj[_p.name] = accessor.value;
+          }
+          else if (_p.type === "viewModel") {
+            const nested = instance.viewModel(_p.name);
+            if (nested) obj[_p.name] = readInstanceProperties(nested, nextAncestors);
+          }
         } catch {}
       }
       return obj;
     }
 
-    function applyPropsToInstance(inst, itemData) {
+    function normalizeScalarValue(type, value) {
+      if (type === "number") {
+        const number = typeof value === "number" ? value
+          : typeof value === "string" && value.trim() !== "" ? Number(value.trim()) : NaN;
+        if (!Number.isFinite(number)) throw new TypeError("Expected a finite number or numeric string");
+        return number;
+      }
+      if (type === "boolean") {
+        if (typeof value === "boolean") return value;
+        if (value === 1 || value === 0) return value === 1;
+        if (typeof value === "string") {
+          const text = value.trim().toLowerCase();
+          if (text === "true" || text === "1") return true;
+          if (text === "false" || text === "0") return false;
+        }
+        throw new TypeError("Expected a boolean, true/false string, or 0/1");
+      }
+      if (type === "string") {
+        if (typeof value === "string") return value;
+        if ((typeof value === "number" && Number.isFinite(value)) || typeof value === "boolean") return String(value);
+        throw new TypeError("Expected a string or scalar text value");
+      }
+      return value;
+    }
+
+    function applyPropsToInstance(inst, itemData, pathPrefix = "", report = { rejected: [] }, depth = 0) {
+      if (depth >= 64) throw new Error("List item View Model nesting exceeds 64 levels");
+      const properties = new Map(inst.properties.map(property => [property.name, property]));
       for (const key of Object.keys(itemData)) {
-        // Underscore-prefixed fields are internal helpers (never written to the instance).
-        if (key.startsWith('_')) continue;
+        if (key.startsWith('_') || key.includes('__')) continue;
+        const property = properties.get(key);
+        const path = pathPrefix ? `${pathPrefix}/${key}` : key;
+        if (!property) continue;
         const val = itemData[key];
         try {
-          if (typeof val === 'boolean') {
-            const a = inst.boolean(key); if (a) a.value = val;
-          } else if (typeof val === 'number') {
-            const a = inst.number(key); if (a) a.value = val;
-          } else if (typeof val === 'string') {
-            const strAcc = inst.string(key);
-            if (strAcc) { strAcc.value = val; continue; }
-            // Hex color string (#rrggbb or #rrggbbaa)
-            if (val.startsWith('#')) {
-              const colorAcc = inst.color(key);
-              if (colorAcc) {
-                const hex = val.replace('#', '');
-                colorAcc.rgba(
-                  parseInt(hex.substring(0, 2), 16), parseInt(hex.substring(2, 4), 16),
-                  parseInt(hex.substring(4, 6), 16), hex.length === 8 ? parseInt(hex.substring(6, 8), 16) : 255
-                );
-                continue;
-              }
+          if (["string", "number", "boolean"].includes(property.type)) {
+            const value = normalizeScalarValue(property.type, val);
+            const accessor = inst[property.type](key);
+            if (!accessor) throw new Error("Property accessor unavailable");
+            if (accessor.value !== value) accessor.value = value;
+          } else if (property.type === "enum" || property.type === "enumType") {
+            const accessor = inst.enum(key);
+            const values = accessor && accessor.values;
+            let value = val;
+            if (values && !values.includes(value)) {
+              const index = normalizeScalarValue("number", val);
+              if (!Number.isInteger(index) || index < 0 || index >= values.length) throw new TypeError("Unknown enum option");
+              value = values[index];
             }
-            // Image URL
+            if (!accessor) throw new Error("Enum accessor unavailable");
+            if (accessor.value !== value) accessor.value = value;
+          } else if (property.type === "color") {
+            handleColorUpdate({ accessor: inst.color(key) }, val);
+          } else if (property.type === "image") {
+            if (typeof val !== "string") throw new TypeError("Expected an image URL string");
             if (val) applyImageProperty(inst, key, val, itemData);
-          } else if (val && typeof val === 'object' && 'r' in val) {
-            // RGBA color object
-            const colorAcc = inst.color(key);
-            if (colorAcc) colorAcc.rgba(
-              Math.round(val.r), Math.round(val.g), Math.round(val.b),
-              val.a !== undefined ? Math.round(val.a * 255) : 255
-            );
+          } else if (property.type === "viewModel") {
+            if (!val || typeof val !== "object" || Array.isArray(val)) throw new TypeError("Expected a nested property object");
+            const nested = inst.viewModel(key);
+            if (!nested) throw new Error("Nested View Model is not bound");
+            applyPropsToInstance(nested, val, path, report, depth + 1);
           }
-        } catch {}
+        } catch (error) {
+          report.rejected.push({ path, expected: property.type, received: val === null ? "null" : typeof val, reason: error.message });
+        }
       }
+      return report;
     }
 
     // Image before/after pair: new picture -> "<key>", previous -> "<key>__",
@@ -652,7 +680,7 @@
           }
           seen[key] = url;
           if (histKey) imageUrlHistory[histKey] = url;
-          resumeAfterImageUpdate(instance);
+          resumeAfterPropertyUpdate(instance);
         } catch {}
       })();
     }
@@ -732,19 +760,11 @@
         if (!rootInstance) return;
         const rootName = findVMNameForInstance(rootInstance) || (rootVM && rootVM.name) || "Main";
 
-        function sameInstance(a, b) {
-          if (a === b) return true;
-          try {
-            const an = a.nativeInstance, bn = b.nativeInstance;
-            return !!(an && bn && (an === bn || (typeof an.isAliasOf === "function" && an.isAliasOf(bn))));
-          } catch { return false; }
-        }
-
         function processViewModel(instance, pathPrefix, parentVMName, ancestors, internalParent) {
           if (!instance) return;
           // A repeated definition can be a valid child instance. Stop only a
           // cycle of actual instances; allow the same child in sibling paths.
-          if (ancestors.some(parent => sameInstance(parent, instance)) || ancestors.length >= 64) {
+          if (ancestors.some(parent => sameViewModelInstance(parent, instance)) || ancestors.length >= 64) {
             console.warn("[RiveWidget] cyclic or excessively deep View Model path skipped", { path: pathPrefix });
             return;
           }
@@ -892,7 +912,8 @@
     // =========================================================================
 
     function handleScalarUpdate(prop, value) {
-      if (value !== prop.accessor.value) prop.accessor.value = value;
+      const normalized = normalizeScalarValue(prop.type, value);
+      if (normalized !== prop.accessor.value) prop.accessor.value = normalized;
     }
 
     function handleImageUpdate(name, prop, imageUrl) {
@@ -915,7 +936,7 @@
           if (instance !== widgetState.r || requestGeneration !== prop.imageRequestGeneration) return;
           prop.accessor.value = image;
           prop.currentImageUrl = imageUrl;
-          resumeAfterImageUpdate(instance);
+          resumeAfterPropertyUpdate(instance);
         } catch (error) {
           if (instance === widgetState.r && requestGeneration === prop.imageRequestGeneration) {
             console.warn("[RiveWidget] image apply failed:", { name, path: prop.path, error });
@@ -981,8 +1002,12 @@
     // Same stable key, read from a live Rive instance.
     function resolveInstanceKey(inst) {
       if (!inst) return null;
-      try { const a = inst.string('name'); if (a && a.value) return 'n:' + String(a.value); } catch {}
-      try { const a = inst.string('id');   if (a && a.value) return 'i:' + String(a.value); } catch {}
+      for (const [key, prefix] of [["name", "n:"], ["id", "i:"]]) {
+        try {
+          const accessor = inst.string(key) || inst.number(key);
+          if (accessor && accessor.value !== "" && accessor.value != null) return prefix + String(accessor.value);
+        } catch {}
+      }
       return null;
     }
 
@@ -990,7 +1015,7 @@
     // item has a stable name/id key that matches its instance.
     function tryReorderInstancesToIncomingOrder(listAcc, items, instanceMap) {
       const length = listAcc.length != null ? listAcc.length : 0;
-      if (length !== items.length || length < 2) return;
+      if (length !== items.length || length < 2) return false;
 
       const current = [];
       const positionByKey = new Map();
@@ -998,16 +1023,17 @@
         let inst;
         try { inst = listAcc.instanceAt(i); } catch {}
         const key = resolveInstanceKey(inst);
-        if (!inst || !key || positionByKey.has(key)) return;
+        if (!inst || !key || positionByKey.has(key)) return false;
         current[i] = inst;
         positionByKey.set(key, i);
       }
 
       const desiredKeys = items.map(resolveItemKey);
-      if (desiredKeys.some(k => !k)) return;
-      if (new Set(desiredKeys).size !== desiredKeys.length) return;
-      if (!desiredKeys.every(k => positionByKey.has(k))) return;
+      if (desiredKeys.some(k => !k)) return false;
+      if (new Set(desiredKeys).size !== desiredKeys.length) return false;
+      if (!desiredKeys.every(k => positionByKey.has(k))) return false;
 
+      let reordered = false;
       for (let i = 0; i < desiredKeys.length; i++) {
         const desiredKey = desiredKeys[i];
         const currentPos = positionByKey.get(desiredKey);
@@ -1017,7 +1043,8 @@
         const displacedInst = current[i];
         const displacedKey = resolveInstanceKey(displacedInst);
 
-        try { listAcc.swap(i, currentPos); } catch { return; }
+        try { if (listAcc.swap(i, currentPos) === false) break; } catch { break; }
+        reordered = true;
 
         current[i] = desiredInst;
         current[currentPos] = displacedInst;
@@ -1029,37 +1056,67 @@
       for (let i = 0; i < length; i++) {
         if (current[i]) instanceMap.set(i, current[i]);
       }
+      return reordered;
+    }
+
+    function parseListPayload(rawData, rowProperties = []) {
+      const parsed = typeof rawData === "string" ? JSON.parse(rawData) : rawData;
+      let items;
+      if (Array.isArray(parsed)) {
+        items = parsed;
+      } else if (parsed && typeof parsed === "object") {
+        const keys = Object.keys(parsed);
+        // Singular may return a table wrapped under its Control Node ID.
+        // Use its structure, not a hardcoded table name. A declared row list
+        // property is a row value rather than an outer table wrapper.
+        if (keys.length === 1 && Array.isArray(parsed[keys[0]]) && !rowProperties.includes(keys[0])) {
+          items = parsed[keys[0]];
+        } else {
+          if (keys.length && rowProperties.length && !keys.some(key => rowProperties.includes(key) || key === "_vm")) {
+            throw new TypeError("Object does not contain row properties; expected a row array or a single table-array wrapper");
+          }
+          items = [parsed];
+        }
+      } else {
+        throw new TypeError("Expected row objects, not null or a scalar");
+      }
+      if (items.some(item => !item || typeof item !== "object" || Array.isArray(item))) {
+        throw new TypeError("Each list row must be an object");
+      }
+      return items;
     }
 
     function handleListUpdate(prop, rawData) {
-      const rawStr = typeof rawData === 'string' ? rawData : JSON.stringify(rawData);
-
-      let items;
+      const instance = widgetState.r;
+      const vmi = prop.ownerInstance || (instance && instance.viewModelInstance);
+      if (!vmi) return;
+      const listAcc = vmi.list(prop.path) || prop.accessor;
+      if (!listAcc) return;
+      let currentLength = listAcc.length != null ? listAcc.length : 0;
+      // Remember the actual row type before a payload empties the list.
+      if (!prop.itemVMName && currentLength > 0 && widgetState._findVMNameForInstance) {
+        prop.itemVMName = widgetState._findVMNameForInstance(listAcc.instanceAt(0));
+      }
+      let items, rawStr;
       try {
-        const parsed = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
-        items = Array.isArray(parsed) ? parsed : [parsed];
+        const definition = prop.itemVMName && instance ? instance.viewModelByName(prop.itemVMName) : null;
+        items = parseListPayload(rawData, definition ? definition.properties.map(property => property.name) : []);
+        rawStr = JSON.stringify(items);
       } catch (error) {
-        console.warn("[RiveWidget:list] failed to parse payload", { path: prop.path, error });
+        console.warn("[RiveWidget:list] invalid payload", { path: prop.path, received: rawData === null ? "null" : typeof rawData, error });
         return;
       }
-
-      const vmi = prop.ownerInstance || widgetState.r.viewModelInstance;
-      if (!vmi) return;
-      var _listResult = vmi.list(prop.path); const listAcc = _listResult != null ? _listResult : prop.accessor;
 
       // instanceMap: logical-index → instance, so writes hit the right instance even if the sort script reorders mid-loop.
       if (!prop.instanceMap) prop.instanceMap = new Map();
 
-      let currentLength = listAcc.length != null ? listAcc.length : 0;
       const newLength = items.length;
-      const dataUnchanged = prop._lastListData === rawStr;
+      const dataUnchanged = prop._lastListData === rawStr && currentLength === newLength;
 
-      // First update: clear authored/default instances so items re-add in Singular's order.
+      // Adopt authored rows instead of throwing away their fonts, styles,
+      // nested instances, and internal animation values on the first payload.
       if (prop.instanceMap.size === 0 && currentLength > 0) {
-        for (let i = currentLength - 1; i >= 0; i--) {
-          try { listAcc.removeInstanceAt(i); } catch {}
-        }
-        currentLength = 0;
+        for (let i = 0; i < currentLength; i++) prop.instanceMap.set(i, listAcc.instanceAt(i));
       }
 
       if (!dataUnchanged && currentLength > newLength) {
@@ -1122,12 +1179,35 @@
 
       // Reorder to incoming order even when data is unchanged (restores the no-sort
       // order after leaving a stat-sort mode). No-op if already ordered.
-      if (prop.instanceMap.size > 0 && currentLength === newLength && currentLength > 1) {
-        tryReorderInstancesToIncomingOrder(listAcc, items, prop.instanceMap);
-      }
+      const reordered = prop.instanceMap.size > 0 && currentLength === newLength && currentLength > 1
+        && tryReorderInstancesToIncomingOrder(listAcc, items, prop.instanceMap);
 
-      if (dataUnchanged) return;
-      prop._lastListData = rawStr;
+      if (dataUnchanged) {
+        if (reordered) resumeAfterPropertyUpdate(instance);
+        return;
+      }
+      const report = { rejected: [] };
+      let creationFailed = false;
+
+      function createRow(item, index) {
+        const vmName = item._vm != null ? item._vm : prop.itemVMName;
+        if (!vmName) {
+          creationFailed = true;
+          console.warn("[RiveWidget:list] cannot add item: item ViewModel name unknown", {
+            index, path: prop.path,
+            hint: "ensure the Rive list has at least one default item, or include a _vm field in each item",
+          });
+          return null;
+        }
+        try {
+          const vm = instance.viewModelByName(vmName);
+          const row = vm && (vm.defaultInstance() || vm.instance());
+          if (row) return row;
+        } catch {}
+        creationFailed = true;
+        console.warn("[RiveWidget:list] could not create item instance", { index, path: prop.path, vmName });
+        return null;
+      }
 
       // Snapshot instance refs so sort-induced reorders mid-loop don't misalign writes.
       const existingInstances = [];
@@ -1137,9 +1217,30 @@
 
       const keepCount = Math.min(currentLength, newLength);
       for (let i = 0; i < keepCount; i++) {
-        const inst = prop.instanceMap.has(i) ? prop.instanceMap.get(i) : existingInstances[i];
+        let inst = prop.instanceMap.has(i) ? prop.instanceMap.get(i) : existingInstances[i];
+        const requestedVM = items[i]._vm;
+        if (inst && requestedVM && widgetState._findVMNameForInstance && widgetState._findVMNameForInstance(inst) !== requestedVM) {
+          const replacement = createRow(items[i], i);
+          if (!replacement) continue;
+          let position = -1;
+          for (let j = 0; j < listAcc.length; j++) {
+            if (sameViewModelInstance(listAcc.instanceAt(j), inst)) { position = j; break; }
+          }
+          try {
+            if (position < 0) throw new Error("Existing row no longer belongs to the list");
+            if (listAcc.addInstanceAt(replacement, position) === false) throw new Error("Replacement row insertion failed");
+            listAcc.removeInstanceAt(position + 1);
+            if (!prop.addedInstances) prop.addedInstances = [];
+            prop.addedInstances.push(replacement);
+            inst = replacement;
+          } catch (error) {
+            creationFailed = true;
+            console.warn("[RiveWidget:list] row replacement failed", { path: prop.path, index: i, error });
+            continue;
+          }
+        }
         if (inst) {
-          try { applyPropsToInstance(inst, items[i]); } catch {}
+          applyPropsToInstance(inst, items[i], `${prop.path}/${i}`, report);
           prop.instanceMap.set(i, inst);
         }
       }
@@ -1147,30 +1248,28 @@
       if (!prop.addedInstances) prop.addedInstances = [];
       for (let i = currentLength; i < newLength; i++) {
         const item = items[i];
-        const vmName = item._vm != null ? item._vm : prop.itemVMName;
-        if (!vmName) {
-          console.warn("[RiveWidget:list] cannot add item: item ViewModel name unknown", {
-            index: i,
-            hint: "ensure the Rive list has at least one default item, or include a _vm field in each item"
-          });
-          continue;
-        }
-        let vm, inst;
-        try { vm = widgetState.r.viewModelByName(vmName); } catch {}
-        try { inst = vm ? vm.instance() : undefined; } catch {}
-        if (!inst) {
-          console.warn("[RiveWidget:list] could not create item instance", { index: i, vmName });
-          continue;
-        }
-        applyPropsToInstance(inst, item);
+        const inst = createRow(item, i);
+        // Keep a contiguous prefix so a retry cannot mistake a later row for
+        // the failed row's logical index.
+        if (!inst) break;
+        applyPropsToInstance(inst, item, `${prop.path}/${i}`, report);
         try {
-          listAcc.addInstance(inst);
+          if (listAcc.addInstance(inst) === false) throw new Error("Row insertion failed");
           prop.addedInstances.push(inst);
           prop.instanceMap.set(i, inst);
         } catch (error) {
+          creationFailed = true;
           console.warn("[RiveWidget:list] addInstance failed", { index: i, error });
+          break;
         }
       }
+      const attached = [];
+      for (let i = 0; i < listAcc.length; i++) attached.push(listAcc.instanceAt(i));
+      prop.addedInstances = prop.addedInstances.filter(row => attached.some(item => sameViewModelInstance(item, row)));
+      // Failed row creation remains retryable with the same payload.
+      if (!creationFailed && listAcc.length === newLength) prop._lastListData = rawStr;
+      if (report.rejected.length) console.warn("[RiveWidget:list] rejected property values", { path: prop.path, properties: report.rejected });
+      resumeAfterPropertyUpdate(instance);
     }
 
     // =========================================================================
@@ -1382,7 +1481,6 @@
 
     function addReferencedAudioFields(fields, groups) {
       const audioAssets = Object.values(widgetState.referencedAudioAssets);
-      console.log("[RiveWidget][audio] addReferencedAudioFields — known audio assets at UI build:", audioAssets.map(a => a.fieldId));
       if (audioAssets.length === 0) return;
 
       const audioFieldIds = [];
@@ -1465,7 +1563,7 @@
       // Watchdog: if onLoad never fires within 5s, retry once
       const watchdog = setTimeout(() => {
         if (!widgetState.riveReady && widgetState._loadGen === loadGen) {
-          reloadRive(widgetState.fileUrl, "load-watchdog");
+          reloadRive(widgetState.fileUrl);
         }
       }, 5000);
 
@@ -1481,16 +1579,6 @@
         assetLoader: (asset, bytes) => {
           if (widgetState._loadGen !== loadGen) return false;
           try {
-            console.log("[RiveWidget][assetLoader]", {
-              name: asset.name,
-              fileExtension: asset.fileExtension,
-              isAudio: asset.isAudio,
-              isFont: asset.isFont,
-              isImage: asset.isImage,
-              cdnUuid: asset.cdnUuid,
-              bytesLength: bytes != null ? bytes.length : 0,
-              riveReady: widgetState.riveReady,
-            });
             // Let Rive handle hosted (CDN) and embedded assets
             if ((asset.cdnUuid != null ? asset.cdnUuid.length : 0) > 0 || (bytes != null ? bytes.length : 0) > 0) return false;
 
@@ -1508,7 +1596,6 @@
 
             if (asset.isAudio) {
               const fieldId = audioAssetFieldId(asset.name);
-              console.log("[RiveWidget][audio] registering audio asset", { fieldId, assetName: asset.name, storedUrl: widgetState.audioAssetUrls[fieldId] });
               widgetState.referencedAudioAssets[fieldId] = {
                 asset,
                 assetName: asset.name,
@@ -1519,7 +1606,6 @@
               if (cached) {
                 // Synchronous apply so artboard scripts see the audio at init
                 asset.setAudioSource(cached);
-                console.log("[RiveWidget][audio] setAudioSource from cache (sync) for", fieldId);
               } else {
                 fetchAndApplyAudio(fieldId);
               }
@@ -1551,7 +1637,7 @@
               // Resolve a newer/persisted selection before publishing the UI.
               // cleanup must remain outside the runtime's onLoad callback.
               setTimeout(() => {
-                if (widgetState._loadGen === loadGen && widgetState.r === instance) reloadRive(fileUrl, "restore-artboard");
+                if (widgetState._loadGen === loadGen && widgetState.r === instance) reloadRive(fileUrl);
               }, 0);
               return;
             }
@@ -1564,17 +1650,13 @@
             widgetState.stateMachineName = selectedMachine;
             widgetState.stateMachineIndex = machineNames.indexOf(selectedMachine);
             setTimeout(() => {
-              if (widgetState._loadGen === loadGen && widgetState.r === instance) reloadRive(fileUrl, "restore-state-machine");
+              if (widgetState._loadGen === loadGen && widgetState.r === instance) reloadRive(fileUrl);
             }, 0);
             return;
           }
           widgetState.stateMachineName = selectedMachine;
           const machineIndex = machineNames.indexOf(widgetState.stateMachineName);
           widgetState.stateMachineIndex = machineIndex >= 0 ? machineIndex : 0;
-
-          try {
-            console.log("[RiveWidget][audio] onLoad — registered audio assets:", Object.keys(widgetState.referencedAudioAssets), "| instance volume:", widgetState.r ? widgetState.r.volume : "n/a");
-          } catch {}
 
           const vmData = getAllViewModelProperties(instance);
           widgetState.riveProps = vmData.props;
@@ -1584,14 +1666,6 @@
           applyStoredDataBoundFonts();
 
           generateUIModel();
-          console.info("[RiveWidget] View Model UI", {
-            artboard: widgetState.artboardName,
-            stateMachine: widgetState.stateMachineName,
-            boundViewModel: vmData.defaultVMName || null,
-            globalViewModels: vmData.globalViewModelNames,
-            nestedPaths: Object.keys(vmData.vmMetadata).filter(Boolean),
-            visibleProperties: Object.values(vmData.props).filter(prop => !prop.internal).length,
-          });
           ensureFPSCounter(instance);
           widgetState.riveReady = true;
 
@@ -1625,8 +1699,7 @@
       widgetState.r = instance;
     }
 
-    function reloadRive(fileUrl, reason) {
-      console.warn("[RiveWidget] reloadRive", { reason: reason || "unspecified", fileUrl });
+    function reloadRive(fileUrl) {
       widgetState._loadGen = (widgetState._loadGen || 0) + 1;
       widgetState.riveReady = false;
       document.getElementById("canvas").classList.remove("ready");
@@ -1699,7 +1772,6 @@
       let audioUrlChanged = false;
       for (const [key, value] of Object.entries(json)) {
         if (!key.startsWith("riveaudio")) continue;
-        console.log("[RiveWidget][audio] onSingularValue key:", key, "raw value:", JSON.stringify(value));
         // "audio" field type is undocumented — tolerate both string and object payloads
         let url = "";
         if (typeof value === "string") url = value;
@@ -1707,15 +1779,13 @@
         const existing = widgetState.audioAssetUrls[key];
         const changed = existing !== url;
         widgetState.audioAssetUrls[key] = url;
-        console.log("[RiveWidget][audio] extracted url:", url, "| previous:", existing, "| changed:", changed, "| assetRegistered:", !!widgetState.referencedAudioAssets[key]);
         if (changed && widgetState.referencedAudioAssets[key]) audioUrlChanged = true;
         if (widgetState.pendingInitialValues) delete widgetState.pendingInitialValues[key];
       }
       // Audio changes still require a reload so assetLoader can apply the decoded
       // source synchronously. Fonts are swapped live below and do not reload Rive.
       if (audioUrlChanged && widgetState.fileUrl) {
-        console.log("[RiveWidget][audio] audio change → full Rive reload", { audioUrlChanged });
-        reloadRive(widgetState.fileUrl, "audio-change");
+        reloadRive(widgetState.fileUrl);
         return;
       }
 
@@ -1739,7 +1809,7 @@
             widgetState.artboardName = "";
             widgetState.stateMachineName = "";
             widgetState.stateMachineIndex = 0;
-            if (!widgetState.r) initializeRive(newFileUrl); else reloadRive(newFileUrl, "file-url-change");
+            if (!widgetState.r) initializeRive(newFileUrl); else reloadRive(newFileUrl);
             return;
           }
         } else { return; }
@@ -1762,7 +1832,7 @@
         const newLayout = widgetState.layoutOptions[parseInt(json.rive_layout, 10)] || "Contain";
         if (newLayout !== widgetState.layoutFit) {
           widgetState.layoutFit = newLayout;
-          if (widgetState.r && widgetState.fileUrl) { reloadRive(widgetState.fileUrl, "layout-change"); return; }
+          if (widgetState.r && widgetState.fileUrl) { reloadRive(widgetState.fileUrl); return; }
         }
       }
 
@@ -1783,7 +1853,7 @@
               widgetState.artboardName = newArtboard;
               widgetState.stateMachineName = "";
               widgetState.stateMachineIndex = 0;
-              if (widgetState.fileUrl) { reloadRive(widgetState.fileUrl, "artboard-change"); return; }
+              if (widgetState.fileUrl) { reloadRive(widgetState.fileUrl); return; }
             }
           }
         }
@@ -1800,7 +1870,7 @@
           var _smArr = widgetState.r.stateMachineNames; var _smVal = _smArr != null ? _smArr[smIndex] : undefined; const newName = _smVal != null ? _smVal : "";
           if (newName !== widgetState.stateMachineName) {
             widgetState.stateMachineName = newName;
-            if (widgetState.fileUrl) { reloadRive(widgetState.fileUrl, "state-machine-change"); return; }
+            if (widgetState.fileUrl) { reloadRive(widgetState.fileUrl); return; }
           }
         }
       }
@@ -1830,7 +1900,6 @@
 
     SingularWidget.init({
       onInit: async (json) => {
-        console.info("[RiveWidget] Singular onInit");
         widgetState.pendingInitialValues = json;
         const layoutIndex = parseInt(json.rive_layout, 10);
         widgetState.layoutFit = (widgetState.layoutOptions && widgetState.layoutOptions[layoutIndex]) || widgetState.layoutFit || "Contain";

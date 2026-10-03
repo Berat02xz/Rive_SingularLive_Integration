@@ -677,13 +677,15 @@
         try {
           if (instance.viewModelName) return instance.viewModelName;
           const instanceProps = instance.properties;
+          const matches = [];
           for (let i = 0; i < riveInst.viewModelCount; i++) {
             const vm = riveInst.viewModelByIndex(i);
             if (!vm) continue;
             const vmProps = vm.properties;
             if (vmProps.length !== instanceProps.length) continue;
-            if (instanceProps.every(ip => vmProps.find(vp => vp.name === ip.name && vp.type === ip.type))) return vm.name;
+            if (instanceProps.every(ip => vmProps.find(vp => vp.name === ip.name && vp.type === ip.type))) matches.push(vm.name);
           }
+          if (matches.length === 1) return matches[0];
         } catch {}
         return null;
       }
@@ -695,28 +697,14 @@
         mainInstance = riveInst.viewModelInstance;
       } catch {}
 
-      // Preserve the existing list-aware main View Model selection, but never
-      // bind a Global View Model into the artboard's main View Model slot.
-      if (defaultVM) {
-        const autoHasList = defaultVM.properties.some((property) => property.type === "list");
-        if (!autoHasList || !mainInstance) {
-          let chosenVM = null;
-          for (let i = 0; i < riveInst.viewModelCount; i++) {
-            const candidate = riveInst.viewModelByIndex(i);
-            if (candidate && !globalNameSet.has(candidate.name) && candidate.properties.some((property) => property.type === "list")) {
-              chosenVM = candidate;
-              break;
-            }
-          }
-          if (!chosenVM) chosenVM = defaultVM;
-          try {
-            const newInstance = chosenVM.defaultInstance() || chosenVM.instance();
-            if (newInstance) {
-              riveInst.bindViewModelInstance(newInstance);
-              mainInstance = newInstance;
-              defaultVM = chosenVM;
-            }
-          } catch {}
+      // autoBind already chose the selected artboard's authored instance.
+      // Only create a fallback from that same definition when none was bound.
+      if (defaultVM && !mainInstance && !globalNameSet.has(defaultVM.name)) {
+        try {
+          mainInstance = defaultVM.defaultInstance() || defaultVM.instance();
+          if (mainInstance) riveInst.bindViewModelInstance(mainInstance);
+        } catch (error) {
+          console.warn("[RiveWidget] artboard View Model binding failed", { viewModel: defaultVM.name, error });
         }
       }
 
@@ -741,42 +729,48 @@
       }
 
       function collectProperties(rootVM, rootInstance, options) {
-        if (!rootVM || !rootInstance) return;
+        if (!rootInstance) return;
+        const rootName = findVMNameForInstance(rootInstance) || (rootVM && rootVM.name) || "Main";
 
-        function processViewModel(vm, pathPrefix, ancestors) {
-          if (!vm || ancestors.has(vm)) return;
-          const nextAncestors = new Set(ancestors);
-          nextAncestors.add(vm);
+        function sameInstance(a, b) {
+          if (a === b) return true;
+          try {
+            const an = a.nativeInstance, bn = b.nativeInstance;
+            return !!(an && bn && (an === bn || (typeof an.isAliasOf === "function" && an.isAliasOf(bn))));
+          } catch { return false; }
+        }
 
-          for (const property of vm.properties) {
+        function processViewModel(instance, pathPrefix, parentVMName, ancestors, internalParent) {
+          if (!instance) return;
+          // A repeated definition can be a valid child instance. Stop only a
+          // cycle of actual instances; allow the same child in sibling paths.
+          if (ancestors.some(parent => sameInstance(parent, instance)) || ancestors.length >= 64) {
+            console.warn("[RiveWidget] cyclic or excessively deep View Model path skipped", { path: pathPrefix });
+            return;
+          }
+          const vmName = findVMNameForInstance(instance) || (pathPrefix ? "Nested" : rootName);
+          const nextAncestors = [...ancestors, instance];
+          if (!options.isGlobal) {
+            vmMetadata[pathPrefix] = {
+              vmName, parentVMName,
+              parentProp: pathPrefix.split("/").pop() || null,
+              path: pathPrefix,
+            };
+          }
+
+          for (const property of instance.properties) {
             const propertyPath = pathPrefix ? `${pathPrefix}/${property.name}` : property.name;
+            const internal = internalParent || property.name.includes("__");
 
             if (property.type === "viewModel") {
-              let matchedVM = null;
+              let nestedInstance = null;
               try {
-                const nestedInstance = rootInstance.viewModel(propertyPath);
-                const nestedVMName = findVMNameForInstance(nestedInstance);
-                if (nestedVMName) matchedVM = riveInst.viewModelByName(nestedVMName);
+                nestedInstance = instance.viewModel(property.name);
               } catch {}
-              if (!matchedVM) {
-                for (let i = 0; i < riveInst.viewModelCount; i++) {
-                  const candidate = riveInst.viewModelByIndex(i);
-                  if (!candidate || nextAncestors.has(candidate)) continue;
-                  if (candidate.name && property.name.includes(candidate.name)) {
-                    matchedVM = candidate;
-                    break;
-                  }
-                }
-              }
-              if (matchedVM) {
-                if (!options.isGlobal) {
-                  vmMetadata[property.name] = {
-                    vmName: matchedVM.name,
-                    parentProp: property.name,
-                    parentVMName: vm.name,
-                  };
-                }
-                processViewModel(matchedVM, propertyPath, nextAncestors);
+              if (nestedInstance) {
+                processViewModel(nestedInstance, propertyPath, vmName, nextAncestors, internal);
+              } else if (!internal) {
+                console.warn("[RiveWidget] nested View Model has no bound instance", { path: propertyPath });
               }
               continue;
             }
@@ -788,12 +782,19 @@
             const propKey = propertyPath.replace(/\//g, "_");
             const storageKey = options.isGlobal
               ? `global:${options.viewModelName}:${propertyPath}`
-              : propKey;
+              : propertyPath;
             const propData = {
               type: propertyType,
               accessor,
               path: propertyPath,
               ownerInstance: rootInstance,
+              propertyName: property.name,
+              parentPath: pathPrefix,
+              vmName,
+              rootVMName: rootName,
+              internal,
+              // Retain existing Singular IDs except where paths collide.
+              fieldId: propertyType === "font" ? dataBoundFontFieldId(propKey) : toAlphanumericId(propKey),
             };
 
             if (options.isGlobal) {
@@ -809,15 +810,6 @@
               );
             }
 
-            if (propertyType === "font") {
-              if (!propData.fieldId) propData.fieldId = dataBoundFontFieldId(propKey);
-              widgetState.dataBoundFontProperties[propData.fieldId] = {
-                accessor,
-                propertyName: storageKey,
-                path: propertyPath,
-                globalViewModelName: options.isGlobal ? options.viewModelName : null,
-              };
-            }
             if (propertyType === "enumType" && accessor.values) propData.enumValues = accessor.values;
             if (propertyType === "list") {
               propData.addedInstances = [];
@@ -832,7 +824,7 @@
           }
         }
 
-        processViewModel(rootVM, "", new Set());
+        processViewModel(rootInstance, "", null, [], false);
       }
 
       // Discover globals after any main-instance rebind so these accessors point
@@ -852,19 +844,45 @@
         if (Object.keys(globalProps).length > beforeCount) discoveredGlobalNames.push(viewModelName);
       }
 
-      if (defaultVM && mainInstance) {
+      if (mainInstance) {
         collectProperties(defaultVM, mainInstance, {
           isGlobal: false,
-          viewModelName: defaultVM.name,
+          viewModelName: findVMNameForInstance(mainInstance) || (defaultVM && defaultVM.name),
           target: normalProps,
         });
       }
 
+      const props = { ...globalProps, ...normalProps };
+      const idCounts = new Map();
+      const reservedIds = new Set(["riveartboard", "rivestatemachineselect", "rive_file_url", "rive_layout", "rive_renderer", "show_fps"]);
+      for (const prop of Object.values(props)) {
+        if (!prop.internal) idCounts.set(prop.fieldId, (idCounts.get(prop.fieldId) || 0) + 1);
+      }
+      const usedIds = new Set([...reservedIds, ...idCounts.keys()]);
+      for (const [name, prop] of Object.entries(props)) {
+        if (prop.internal) continue;
+        if (idCounts.get(prop.fieldId) > 1 || reservedIds.has(prop.fieldId) || !prop.fieldId) {
+          const base = prop.fieldId || "riveproperty";
+          const qualifiedPath = `${prop.rootVMName}:${name}`;
+          let candidate = `${base}${stableIdHash(qualifiedPath)}`;
+          let suffix = 0;
+          while (usedIds.has(candidate)) candidate = `${base}${stableIdHash(`${qualifiedPath}:${++suffix}`)}`;
+          prop.fieldId = candidate;
+          usedIds.add(candidate);
+        }
+        if (prop.type === "font") {
+          widgetState.dataBoundFontProperties[prop.fieldId] = {
+            accessor: prop.accessor, propertyName: name, path: prop.path,
+            globalViewModelName: prop.globalViewModelName || null,
+          };
+        }
+      }
+
       widgetState._findVMNameForInstance = findVMNameForInstance;
       return {
-        props: { ...globalProps, ...normalProps },
+        props,
         vmMetadata,
-        defaultVMName: defaultVM ? defaultVM.name : "",
+        defaultVMName: findVMNameForInstance(mainInstance) || (defaultVM ? defaultVM.name : ""),
         globalViewModelNames: discoveredGlobalNames,
       };
     }
@@ -1166,7 +1184,10 @@
       const count = file.artboardCount();
       for (let i = 0; i < count; i++) {
         const ab = file.artboardByIndex(i);
-        if (ab) artboards.push(ab.name);
+        if (ab) {
+          try { artboards.push(typeof ab.name === "function" ? ab.name() : ab.name); }
+          finally { if (typeof ab.delete === "function") ab.delete(); }
+        }
       }
       return artboards;
     }
@@ -1175,7 +1196,11 @@
       const file = widgetState.r ? widgetState.r.file : undefined;
       if (!file) return 0;
       const defaultArtboard = file.defaultArtboard();
-      const defaultName = defaultArtboard ? defaultArtboard.name : null;
+      let defaultName = null;
+      if (defaultArtboard) {
+        try { defaultName = typeof defaultArtboard.name === "function" ? defaultArtboard.name() : defaultArtboard.name; }
+        finally { if (typeof defaultArtboard.delete === "function") defaultArtboard.delete(); }
+      }
       for (let i = 0; i < availableArtboards.length; i++) {
         if (availableArtboards[i] === widgetState.artboardName) return i;
         if (!widgetState.artboardName && availableArtboards[i] === defaultName) return i;
@@ -1196,8 +1221,7 @@
     function addStateMachineField(fields) {
       const names = widgetState.r ? widgetState.r.stateMachineNames : undefined;
       if (!names || names.length === 0) return;
-      // A blank name means no state machine was instantiated yet. Keep the
-      // snapshot unset so Singular's initial selection is applied once.
+      // Snapshot the machine running on this artboard, not a previous artboard.
       widgetState._lastStateMachineSelection = widgetState.stateMachineName
         ? (widgetState.stateMachineIndex || 0).toString()
         : null;
@@ -1208,25 +1232,15 @@
       });
     }
 
-    function resolveGroupInfo(name) {
-      let viewModelName = widgetState.defaultVMName || "Main";
-      let parentPropertyName = null;
-      let groupKey = viewModelName;
-
-      if (name.includes("_") && widgetState.vmMetadata) {
-        const parts = name.split("_");
-        const pathPrefix = parts[0];
-        if (widgetState.vmMetadata[pathPrefix]) {
-          viewModelName = widgetState.vmMetadata[pathPrefix].vmName;
-          parentPropertyName = widgetState.vmMetadata[pathPrefix].parentProp;
-          groupKey = pathPrefix;
-        } else {
-          parts.pop();
-          viewModelName = parts.join(" ");
-          groupKey = viewModelName;
-        }
-      }
-      return { groupKey, viewModelName, parentPropertyName };
+    function resolveGroupInfo(prop) {
+      const path = prop.parentPath || "";
+      const metadata = widgetState.vmMetadata[path];
+      return {
+        groupKey: path,
+        viewModelName: prop.vmName || (metadata && metadata.vmName) || widgetState.defaultVMName || "Main",
+        parentPropertyName: metadata ? metadata.parentProp : null,
+        path,
+      };
     }
 
     function buildArtboardSelections(prop, availableArtboards) {
@@ -1282,8 +1296,12 @@
           break;
         case "color":    defaultValue = riveColorValueToRGBA(prop.accessor.value); break;
         case "enumType":
-          fieldType = "selection"; defaultValue = (prop.accessor.value != null ? prop.accessor.value : 0).toString();
-          if (prop.enumValues && prop.enumValues.length) selections = prop.enumValues.map((v, i) => ({ id: i.toString(), title: v }));
+          fieldType = "selection";
+          if (prop.enumValues && prop.enumValues.length) {
+            selections = prop.enumValues.map((v, i) => ({ id: i.toString(), title: v }));
+            const currentIndex = prop.enumValues.indexOf(prop.accessor.value);
+            defaultValue = (currentIndex >= 0 ? currentIndex : 0).toString();
+          } else defaultValue = "0";
           break;
         case "artboard":
           fieldType = "selection";
@@ -1327,23 +1345,11 @@
 
       for (const [groupKey, childIds] of Object.entries(groupedProperties)) {
         const groupInfo = viewModelParentInfo[groupKey];
-        let groupTitle = groupKey, vmName = groupKey;
-
-        if (groupInfo && groupInfo.parentProp) {
-          vmName = groupInfo.vmName;
-          const cleanParentProp = groupInfo.parentProp.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-          if (widgetState.vmMetadata && widgetState.vmMetadata[groupInfo.parentProp]) {
-            const parentVMName = widgetState.vmMetadata[groupInfo.parentProp].parentVMName || "Main";
-            groupTitle = `${parentVMName} (${cleanParentProp}: ${vmName})`;
-          } else {
-            groupTitle = `${vmName} - ${cleanParentProp}`;
-          }
-        } else if (groupInfo && groupInfo.vmName) {
-          vmName = groupInfo.vmName;
-          groupTitle = vmName;
-        }
-
-        groups.push({ id: toAlphanumericId(groupKey) + "group", title: `${groupTitle} : View Model`, width: "double", toolTip: `Properties from ${vmName}`, childIds });
+        const vmName = groupInfo.vmName;
+        const path = groupInfo.path;
+        const groupTitle = path ? `${path.replace(/\//g, " → ")} (${vmName})` : vmName;
+        const groupIdKey = `${widgetState.defaultVMName}:${path}`;
+        groups.push({ id: `rivevm${toAlphanumericId(groupIdKey)}${stableIdHash(groupIdKey)}group`, title: `${groupTitle} : View Model`, width: "double", toolTip: `Properties from ${vmName}`, childIds });
       }
       return groups;
     }
@@ -1411,20 +1417,21 @@
 
       // Dynamic property fields
       for (const [name, prop] of Object.entries(widgetState.riveProps)) {
-        if (name.includes("__")) continue;
+        if (prop.internal) continue;
         let displayName;
         let groupKey;
         if (prop.isGlobal) {
           displayName = prop.displayName;
           groupKey = prop.globalViewModelName;
         } else {
-          displayName = name.includes("_") ? name.split("_").pop() : name;
-          const groupInfo = resolveGroupInfo(name);
+          displayName = prop.propertyName;
+          const groupInfo = resolveGroupInfo(prop);
           groupKey = groupInfo.groupKey;
           if (!viewModelParentInfo[groupKey]) {
             viewModelParentInfo[groupKey] = {
               vmName: groupInfo.viewModelName,
               parentProp: groupInfo.parentPropertyName,
+              path: groupInfo.path,
             };
           }
         }
@@ -1450,7 +1457,10 @@
 
     function initializeRive(fileUrl) {
       widgetState.riveReady = false;
+      // Invalidate older prefetch/reload completions as well as older onLoad callbacks.
+      widgetState._reloadGen = (widgetState._reloadGen || 0) + 1;
       const loadGen = (widgetState._loadGen = (widgetState._loadGen != null ? widgetState._loadGen : 0) + 1);
+      let instance = null;
 
       // Watchdog: if onLoad never fires within 5s, retry once
       const watchdog = setTimeout(() => {
@@ -1469,6 +1479,7 @@
         enableFPSCounter: true,
 
         assetLoader: (asset, bytes) => {
+          if (widgetState._loadGen !== loadGen) return false;
           try {
             console.log("[RiveWidget][assetLoader]", {
               name: asset.name,
@@ -1521,13 +1532,51 @@
 
         onLoad: () => {
           clearTimeout(watchdog);
+          if (widgetState._loadGen !== loadGen || widgetState.r !== instance) return;
           resizeCanvas();
+          widgetState.artboardName = instance.activeArtboard || widgetState.artboardName;
+          const pending = widgetState.pendingInitialValues || {};
+          const artboardIndex = parseInt(pending.riveartboard, 10);
+          if (Number.isInteger(artboardIndex) && artboardIndex >= 0 && artboardIndex < instance.file.artboardCount()) {
+            const selected = instance.file.artboardByIndex(artboardIndex);
+            let selectedName = null;
+            if (selected) {
+              try { selectedName = typeof selected.name === "function" ? selected.name() : selected.name; }
+              finally { if (typeof selected.delete === "function") selected.delete(); }
+            }
+            if (selectedName && selectedName !== widgetState.artboardName) {
+              widgetState.artboardName = selectedName;
+              widgetState.stateMachineName = "";
+              widgetState.stateMachineIndex = 0;
+              // Resolve a newer/persisted selection before publishing the UI.
+              // cleanup must remain outside the runtime's onLoad callback.
+              setTimeout(() => {
+                if (widgetState._loadGen === loadGen && widgetState.r === instance) reloadRive(fileUrl, "restore-artboard");
+              }, 0);
+              return;
+            }
+          }
+          const machineNames = instance.stateMachineNames || [];
+          const playingNames = instance.playingStateMachineNames || [];
+          const savedMachineIndex = parseInt(pending.rivestatemachineselect, 10);
+          const selectedMachine = machineNames[savedMachineIndex] || widgetState.stateMachineName || playingNames[0] || machineNames[0] || "";
+          if (selectedMachine && !playingNames.includes(selectedMachine)) {
+            widgetState.stateMachineName = selectedMachine;
+            widgetState.stateMachineIndex = machineNames.indexOf(selectedMachine);
+            setTimeout(() => {
+              if (widgetState._loadGen === loadGen && widgetState.r === instance) reloadRive(fileUrl, "restore-state-machine");
+            }, 0);
+            return;
+          }
+          widgetState.stateMachineName = selectedMachine;
+          const machineIndex = machineNames.indexOf(widgetState.stateMachineName);
+          widgetState.stateMachineIndex = machineIndex >= 0 ? machineIndex : 0;
 
           try {
             console.log("[RiveWidget][audio] onLoad — registered audio assets:", Object.keys(widgetState.referencedAudioAssets), "| instance volume:", widgetState.r ? widgetState.r.volume : "n/a");
           } catch {}
 
-          const vmData = getAllViewModelProperties(widgetState.r);
+          const vmData = getAllViewModelProperties(instance);
           widgetState.riveProps = vmData.props;
           widgetState.vmMetadata = vmData.vmMetadata;
           widgetState.defaultVMName = vmData.defaultVMName;
@@ -1535,7 +1584,15 @@
           applyStoredDataBoundFonts();
 
           generateUIModel();
-          ensureFPSCounter(widgetState.r);
+          console.info("[RiveWidget] View Model UI", {
+            artboard: widgetState.artboardName,
+            stateMachine: widgetState.stateMachineName,
+            boundViewModel: vmData.defaultVMName || null,
+            globalViewModels: vmData.globalViewModelNames,
+            nestedPaths: Object.keys(vmData.vmMetadata).filter(Boolean),
+            visibleProperties: Object.values(vmData.props).filter(prop => !prop.internal).length,
+          });
+          ensureFPSCounter(instance);
           widgetState.riveReady = true;
 
           // Guard: only show canvas if this is still the active load
@@ -1547,23 +1604,31 @@
           }, 400);
 
           if (widgetState.pendingInitialValues) {
-            const initialValues = widgetState.pendingInitialValues;
-            widgetState.pendingInitialValues = null;
             // Defer outside onLoad — cleanup() inside it freezes the WebGL2 offscreen renderer.
-            setTimeout(() => onSingularValue(initialValues), 0);
+            setTimeout(() => {
+              if (widgetState._loadGen !== loadGen || widgetState.r !== instance) return;
+              const initialValues = widgetState.pendingInitialValues;
+              widgetState.pendingInitialValues = null;
+              if (initialValues) onSingularValue(initialValues);
+            }, 0);
           }
         },
 
-        onLoadError: () => {},
+        onLoadError: (error) => {
+          if (widgetState._loadGen === loadGen) console.warn("[RiveWidget] Rive load failed", { fileUrl, artboard: widgetState.artboardName, error });
+        },
       };
 
       if (widgetState.artboardName) riveConfig.artboard = widgetState.artboardName;
       if (widgetState.stateMachineName) riveConfig.stateMachines = widgetState.stateMachineName;
-      widgetState.r = new rive.Rive(riveConfig);
+      instance = new rive.Rive(riveConfig);
+      widgetState.r = instance;
     }
 
     function reloadRive(fileUrl, reason) {
       console.warn("[RiveWidget] reloadRive", { reason: reason || "unspecified", fileUrl });
+      widgetState._loadGen = (widgetState._loadGen || 0) + 1;
+      widgetState.riveReady = false;
       document.getElementById("canvas").classList.remove("ready");
       widgetState.referencedFontAssets = {};
       widgetState.dataBoundFontProperties = {};
@@ -1583,6 +1648,7 @@
 
     function updateDynamicProperties(json) {
       for (const [name, prop] of Object.entries(widgetState.riveProps)) {
+        if (prop.internal) continue;
         const id = prop.fieldId || toAlphanumericId(name);
         if (json[id] === undefined) continue;
         try {
@@ -1710,7 +1776,9 @@
         if (selectionChanged && file && artboardIndex >= 0 && artboardIndex < file.artboardCount()) {
           const artboard = file.artboardByIndex(artboardIndex);
           if (artboard) {
-            const newArtboard = typeof artboard.name === "function" ? artboard.name() : artboard.name;
+            let newArtboard;
+            try { newArtboard = typeof artboard.name === "function" ? artboard.name() : artboard.name; }
+            finally { if (typeof artboard.delete === "function") artboard.delete(); }
             if (newArtboard !== widgetState.artboardName) {
               widgetState.artboardName = newArtboard;
               widgetState.stateMachineName = "";
@@ -1727,7 +1795,7 @@
         const incomingSelection = isNaN(smIndex) ? "" : smIndex.toString();
         const selectionChanged = incomingSelection !== widgetState._lastStateMachineSelection;
         widgetState._lastStateMachineSelection = incomingSelection;
-        if (selectionChanged && !isNaN(smIndex) && smIndex >= 0) {
+        if (selectionChanged && !isNaN(smIndex) && smIndex >= 0 && smIndex < widgetState.r.stateMachineNames.length) {
           widgetState.stateMachineIndex = smIndex;
           var _smArr = widgetState.r.stateMachineNames; var _smVal = _smArr != null ? _smArr[smIndex] : undefined; const newName = _smVal != null ? _smVal : "";
           if (newName !== widgetState.stateMachineName) {
@@ -1747,6 +1815,7 @@
 
     function onSingularButtonClicked(action) {
       for (const [name, prop] of Object.entries(widgetState.riveProps)) {
+        if (prop.internal) continue;
         const fieldId = prop.fieldId || toAlphanumericId(name);
         if (fieldId === action && prop && prop.type === "trigger") {
           prop.accessor.trigger();

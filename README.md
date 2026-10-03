@@ -68,9 +68,17 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 - Locket ro Rive runtime 2.44.0
 - Image loading now rejects failed http responses, such as 404 and unsuccessful decoding.
 - Call .play() after assigning an image
-- 
+- Semantics supported
+- Reworked Dynamic UI generation with View Model Properties (Nested & Global VM supported)
+
 ---
 
 ### 🧪 Note  
 This project is constantly evolving with ongoing bug fixes and improvements in collaboration with the Singular team.  
 
+
+Planned:
+- Implement GPU Canvas, but for that to be implemented, useOffScreenRenderer needs to be off, which is what enables sharing context across multiple instances, reduces memory usage when displaying multiple Rive instances on a single web page, Stateful Components
+- Patch View Model showing groups with Dynamic UI, proper nesting support
+- hide "__" in both json and on view model properties from being shown or controlled
+- Json fix numbers being shown as numbers instead of string, counter and normalized numbers give numbers, number gives string, maybe a decimal support problem. (test problem first)

@@ -60,11 +60,11 @@ function setup(initial = [row()], itemVMName = 'Row') {
   const context = {window: {addEventListener() {}, rive: {}}, document: {}, SingularWidget: {init() {}},
     console: {warn: (...args) => warnings.push(args), info() {}, log() {}},
     setTimeout, clearTimeout, Uint8Array};
-  vm.runInNewContext(script + ';globalThis.api={widgetState,handleListUpdate,applyPropsToInstance,readInstanceProperties,handleScalarUpdate,normalizeScalarValue,updateDynamicProperties};', context);
+  vm.runInNewContext(script + ';globalThis.api={widgetState,handleListUpdate,applyPropsToInstance,readInstanceProperties,handleScalarUpdate,normalizeScalarValue,updateDynamicProperties,onSingularValue,publishNormalizedNumbers};', context);
   const api = context.api;
   Object.assign(api.widgetState, {r: runtime, stateMachineName: 'Machine', _findVMNameForInstance: inst => inst?.viewModelName});
   const prop = {type: 'list', path: 'rows', ownerInstance: root, accessor: rows, itemVMName};
-  return {api, rows, prop, root, runtime, warnings, plays, definitions,
+  return {api, rows, prop, root, runtime, warnings, plays, definitions, sdk: context.SingularWidget,
     apply: data => api.handleListUpdate(prop, data)};
 }
 
@@ -123,6 +123,149 @@ test('numeric strings are converted according to the row schema', () => {
   const x = setup(); x.apply([{score: '12.5', title: '0012'}]);
   assert.equal(x.rows.instanceAt(0).number('score').value, 12.5);
   assert.equal(x.rows.instanceAt(0).string('title').value, '0012');
+});
+
+test('normalized list JSON contains numbers and preserves numeric text and the caller payload', () => {
+  const x = setup();
+  const incoming = [{score: '25', title: '0012', size__: '10', unknown: '25'}];
+  const normalized = x.apply(incoming);
+  assert.equal(normalized[0].score, 25);
+  assert.equal(normalized[0].title, '0012');
+  assert.equal(normalized[0].size__, 10);
+  assert.equal(normalized[0].unknown, '25');
+  assert.equal(incoming[0].score, '25');
+  assert.equal(incoming[0].size__, '10');
+  assert.equal(x.rows.instanceAt(0).number('size__').value, 24);
+  assert.equal(JSON.parse(x.prop._lastListData)[0].score, 25);
+  x.apply(normalized);
+  x.apply(incoming);
+  assert.equal(x.plays.length, 1);
+});
+
+test('numeric JSON normalization preserves arrays, table wrappers, and single-row shapes', () => {
+  for (const input of [[{score: '25'}], {table: [{score: '25'}]}, {score: '25'}]) {
+    for (const encoded of [false, true]) {
+      const x = setup();
+      const normalized = x.apply(encoded ? JSON.stringify(input) : input);
+      const value = encoded ? JSON.parse(normalized) : normalized;
+      if (Array.isArray(input)) assert.equal(value[0].score, 25);
+      else if (input.table) assert.equal(value.table[0].score, 25);
+      else assert.equal(value.score, 25);
+    }
+  }
+  const x = setup();
+  const alreadyNumeric = '[ { "score": 25 } ]';
+  assert.equal(x.apply(alreadyNumeric), alreadyNumeric);
+});
+
+test('new and replacement rows normalize using their declared model and release schema templates', () => {
+  const x = setup([]);
+  const profile = () => model('Profile', {size: field('number', 12), label: field('string', '')});
+  let released = 0;
+  x.definitions.set('NumericRow', {properties: [{name: 'profile', type: 'viewModel'}], defaultInstance() {
+    const result = model('NumericRow', {profile: {type: 'viewModel', instance: profile()}});
+    result.cleanup = () => released++;
+    return result;
+  }});
+  const payload = [{_vm: 'NumericRow', profile: {size: '25', label: '025'}}];
+  const normalized = x.apply(payload);
+  assert.equal(normalized[0].profile.size, 25);
+  assert.equal(normalized[0].profile.label, '025');
+  assert.equal(payload[0].profile.size, '25');
+  assert.equal(x.rows.instanceAt(0).viewModel('profile').number('size').value, 25);
+  assert.equal(released, 1);
+  x.apply([{_vm: 'Row', score: '2a91'}]);
+  assert.equal(JSON.parse(x.prop._lastListData)[0].score, 0);
+});
+
+test('keyed reordering uses the correct numeric schema for heterogeneous rows', () => {
+  const numeric = model('NumericRow', {id: field('string', 'number'), value: field('number', 1)});
+  const text = model('TextRow', {id: field('string', 'text'), value: field('string', '0012')});
+  const x = setup([numeric, text]);
+  x.apply([{id: 'number', value: '25'}, {id: 'text', value: '0012'}]);
+  const normalized = x.apply([{id: 'text', value: '0025'}, {id: 'number', value: '26'}]);
+  assert.equal(normalized[0].value, '0025');
+  assert.equal(normalized[1].value, 26);
+  assert.equal(x.rows.instanceAt(0), text);
+  assert.equal(text.string('value').value, '0025');
+  assert.equal(numeric.number('value').value, 26);
+});
+
+test('Singular payload corrections retain numeric types without updating unrelated fields or looping', async () => {
+  const x = setup();
+  x.api.widgetState.riveReady = true;
+  const score = field('number', 5);
+  x.api.widgetState.riveProps = {rows: x.prop, score: {type: 'number', accessor: score.accessor}};
+  const model = {fields: [{id: 'rows', type: 'json', title: 'Rows', defaultValue: '[]'},
+    {id: 'score', type: 'number', title: 'Score', defaultValue: 5}], groups: []};
+  x.api.widgetState.customUIModel = model;
+  const calls = [], callbacks = [];
+  x.sdk.setCustomWidgetUI = (publishedModel, cleanup, updates) => {
+    calls.push({cleanup, updates});
+    for (const field of publishedModel.fields) delete field.defaultValue;
+    callbacks.push(x.api.onSingularValue({...updates}));
+    return {success: true};
+  };
+  const original = {rows: '[{"score":"25","title":"0012"}]', score: '10', other: '25'};
+  await x.api.onSingularValue(original);
+  await Promise.all(callbacks);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cleanup, false);
+  assert.equal(calls[0].updates.score, 10);
+  assert.equal(JSON.parse(calls[0].updates.rows)[0].score, 25);
+  assert.equal(JSON.parse(calls[0].updates.rows)[0].title, '0012');
+  assert.equal(calls[0].updates.other, undefined);
+  assert.equal(model.fields[0].defaultValue, '[]');
+  assert.equal(x.api.widgetState.pendingInitialValues.score, 10);
+  assert.equal(JSON.parse(x.api.widgetState.pendingInitialValues.rows)[0].score, 25);
+  assert.equal(original.score, '10');
+  await x.api.onSingularValue(original);
+  assert.equal(calls.length, 1);
+  assert.equal(x.plays.length, 1);
+});
+
+test('a rejected numeric payload correction remains retryable', () => {
+  const x = setup();
+  x.api.widgetState.customUIModel = {fields: [], groups: []};
+  let attempts = 0;
+  x.sdk.setCustomWidgetUI = () => ({success: ++attempts > 1, error: 'Rejected'});
+  x.api.publishNormalizedNumbers({score: '25'}, {score: 25});
+  x.api.publishNormalizedNumbers({score: '25'}, {score: 25});
+  assert.equal(attempts, 2);
+  assert.equal(x.warnings.length, 1);
+});
+
+test('Singular callbacks that reformat scalar numbers as strings cannot create a correction loop', async () => {
+  const x = setup();
+  x.api.widgetState.riveReady = true;
+  const score = field('number', 5);
+  x.api.widgetState.riveProps = {score: {type: 'number', accessor: score.accessor}};
+  x.api.widgetState.customUIModel = {fields: [], groups: []};
+  let calls = 0;
+  const callbacks = [];
+  x.sdk.setCustomWidgetUI = (model, cleanup, updates) => {
+    assert.ok(++calls < 5);
+    callbacks.push(x.api.onSingularValue({score: String(updates.score)}));
+    return {success: true};
+  };
+  await x.api.onSingularValue({score: '25'});
+  await Promise.all(callbacks);
+  assert.equal(calls, 1);
+  assert.equal(score.accessor.value, 25);
+  await x.api.onSingularValue({score: 'aaaa'});
+  await Promise.all(callbacks);
+  assert.equal(calls, 3);
+  assert.equal(score.accessor.value, 0);
+});
+
+test('numeric normalization does not restore consumed font keys to pending initial values', async () => {
+  const x = setup();
+  x.api.widgetState.riveReady = true;
+  const score = field('number', 5);
+  x.api.widgetState.riveProps = {score: {type: 'number', accessor: score.accessor}};
+  await x.api.onSingularValue({score: '25', rivefontExample: {fontData: {family: 'Inter', weight: '400'}}});
+  assert.equal(x.api.widgetState.pendingInitialValues.score, 25);
+  assert.equal(x.api.widgetState.pendingInitialValues.rivefontExample, undefined);
 });
 
 test('all three numeric transport variants preserve values without rescaling', () => {

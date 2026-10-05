@@ -51,6 +51,8 @@
       defaultVMName: "",
       globalViewModelNames: [],
       _findVMNameForInstance: null,
+      customUIModel: null,
+      numericPayloadWrites: new Map(),
       referencedFontAssets: {},  // fieldId → { asset, assetName }
       dataBoundFontProperties: {}, // fieldId → { accessor, propertyName, path }
       metricFontData: {},        // fieldId → { family, weight, subset }
@@ -607,6 +609,25 @@
       return value;
     }
 
+    function normalizeNumericProperties(instance, data, depth = 0) {
+      if (!instance || !data || typeof data !== "object" || Array.isArray(data)) return data;
+      if (depth >= 64) throw new Error("List item View Model nesting exceeds 64 levels");
+      let normalized = data;
+      for (const property of instance.properties) {
+        if (!Object.prototype.hasOwnProperty.call(data, property.name)) continue;
+        const value = data[property.name];
+        let next = value;
+        if (property.type === "number") next = normalizeScalarValue("number", value);
+        else if (property.type === "viewModel") {
+          next = normalizeNumericProperties(instance.viewModel(property.name), value, depth + 1);
+        }
+        if (next !== value) {
+          normalized = { ...normalized, [property.name]: next };
+        }
+      }
+      return normalized;
+    }
+
     function applyPropsToInstance(inst, itemData, pathPrefix = "", report = { rejected: [] }, depth = 0) {
       if (depth >= 64) throw new Error("List item View Model nesting exceeds 64 levels");
       const properties = new Map(inst.properties.map(property => [property.name, property]));
@@ -1094,6 +1115,37 @@
       return items;
     }
 
+    function normalizeListNumbers(prop, items, listAcc) {
+      const templates = new Map();
+      const rowsByKey = new Map(), duplicateKeys = new Set();
+      for (let index = 0; index < listAcc.length; index++) {
+        const row = listAcc.instanceAt(index), key = resolveInstanceKey(row);
+        if (!key || duplicateKeys.has(key)) continue;
+        if (rowsByKey.has(key)) { rowsByKey.delete(key); duplicateKeys.add(key); }
+        else rowsByKey.set(key, row);
+      }
+      try {
+        return items.map((item, index) => {
+          const vmName = item._vm || prop.itemVMName;
+          let row = rowsByKey.get(resolveItemKey(item)) || (prop.instanceMap && prop.instanceMap.get(index));
+          if (!row && index < listAcc.length) row = listAcc.instanceAt(index);
+          if (row && item._vm && widgetState._findVMNameForInstance && widgetState._findVMNameForInstance(row) !== vmName) row = null;
+          if (!row && vmName && widgetState.r) {
+            if (!templates.has(vmName)) {
+              const vm = widgetState.r.viewModelByName(vmName);
+              templates.set(vmName, vm && (vm.defaultInstance() || vm.instance()));
+            }
+            row = templates.get(vmName);
+          }
+          return normalizeNumericProperties(row, item);
+        });
+      } finally {
+        for (const template of templates.values()) {
+          if (template && typeof template.cleanup === "function") template.cleanup();
+        }
+      }
+    }
+
     function handleListUpdate(prop, rawData) {
       const instance = widgetState.r;
       const vmi = prop.ownerInstance || (instance && instance.viewModelInstance);
@@ -1105,10 +1157,18 @@
       if (!prop.itemVMName && currentLength > 0 && widgetState._findVMNameForInstance) {
         prop.itemVMName = widgetState._findVMNameForInstance(listAcc.instanceAt(0));
       }
-      let items, rawStr;
+      let items, rawStr, normalizedPayload = rawData;
       try {
         const definition = prop.itemVMName && instance ? instance.viewModelByName(prop.itemVMName) : null;
-        items = parseListPayload(rawData, definition ? definition.properties.map(property => property.name) : []);
+        const parsed = typeof rawData === "string" ? JSON.parse(rawData) : rawData;
+        const originalItems = parseListPayload(parsed, definition ? definition.properties.map(property => property.name) : []);
+        items = normalizeListNumbers(prop, originalItems, listAcc);
+        if (items.some((item, index) => item !== originalItems[index])) {
+          const normalized = originalItems === parsed ? items
+            : originalItems[0] === parsed ? items[0]
+            : { ...parsed, [Object.keys(parsed)[0]]: items };
+          normalizedPayload = typeof rawData === "string" ? JSON.stringify(normalized, null, 2) : normalized;
+        }
         rawStr = JSON.stringify(items);
       } catch (error) {
         console.warn("[RiveWidget:list] invalid payload", { path: prop.path, received: rawData === null ? "null" : typeof rawData, error });
@@ -1192,7 +1252,7 @@
 
       if (dataUnchanged) {
         if (reordered) resumeAfterPropertyUpdate(instance);
-        return;
+        return normalizedPayload;
       }
       const report = { rejected: [] };
       let creationFailed = false;
@@ -1278,6 +1338,7 @@
       if (!creationFailed && listAcc.length === newLength) prop._lastListData = rawStr;
       if (report.rejected.length) console.warn("[RiveWidget:list] rejected property values", { path: prop.path, properties: report.rejected });
       resumeAfterPropertyUpdate(instance);
+      return normalizedPayload;
     }
 
     // =========================================================================
@@ -1581,7 +1642,45 @@
       addReferencedFontFields(fields, groups);
       addReferencedAudioFields(fields, groups);
       const uiModel = { fields, groups };
-      SingularWidget.setCustomWidgetUI(uiModel);
+      widgetState.customUIModel = uiModel;
+      widgetState.numericPayloadWrites.clear();
+      publishUIModel();
+    }
+
+    function publishUIModel(payloadUpdates) {
+      const model = widgetState.customUIModel;
+      if (!model) return;
+      // Singular mutates field defaults while merging the model. Preserve our
+      // original definitions, and update only the supplied payload fields.
+      return SingularWidget.setCustomWidgetUI({
+        fields: model.fields.map(field => ({ ...field })),
+        groups: model.groups,
+      }, false, payloadUpdates);
+    }
+
+    function publishNormalizedNumbers(original, normalized) {
+      if (!widgetState.customUIModel) return;
+      const updates = {}, previous = new Map();
+      for (const [id, value] of Object.entries(normalized)) {
+        if (value === original[id]) continue;
+        const signature = JSON.stringify([original[id], value]);
+        if (widgetState.numericPayloadWrites.get(id) === signature) continue;
+        previous.set(id, widgetState.numericPayloadWrites.get(id));
+        // Set before calling Singular: it may synchronously deliver onValue.
+        widgetState.numericPayloadWrites.set(id, signature);
+        updates[id] = value;
+      }
+      if (Object.keys(updates).length === 0) return;
+      try {
+        const result = publishUIModel(updates);
+        if (result && result.success === false) throw new Error(result.error || "Payload update rejected");
+      } catch (error) {
+        for (const [id, signature] of previous) {
+          if (signature === undefined) widgetState.numericPayloadWrites.delete(id);
+          else widgetState.numericPayloadWrites.set(id, signature);
+        }
+        console.warn("[RiveWidget] numeric JSON update failed:", error);
+      }
     }
 
     // =========================================================================
@@ -1737,6 +1836,8 @@
     function reloadRive(fileUrl) {
       widgetState._loadGen = (widgetState._loadGen || 0) + 1;
       widgetState.riveReady = false;
+      widgetState.customUIModel = null;
+      widgetState.numericPayloadWrites.clear();
       document.getElementById("canvas").classList.remove("ready");
       widgetState.referencedFontAssets = {};
       widgetState.dataBoundFontProperties = {};
@@ -1755,24 +1856,31 @@
     // =========================================================================
 
     function updateDynamicProperties(json) {
+      const normalized = { ...json };
       for (const [name, prop] of Object.entries(widgetState.riveProps)) {
         if (prop.internal) continue;
         const id = prop.fieldId || toAlphanumericId(name);
         if (json[id] === undefined) continue;
         try {
-          const value = json[id];
+          const value = prop.type === "number" ? normalizeScalarValue("number", json[id]) : json[id];
+          normalized[id] = value;
           switch (prop.type) {
             case "string": case "number": case "boolean": handleScalarUpdate(prop, value); break;
             case "image":    handleImageUpdate(name, prop, value); break;
             case "enumType": handleEnumUpdate(prop, value); break;
             case "artboard": handleArtboardUpdate(prop, value); break;
             case "color":    handleColorUpdate(prop, value); break;
-            case "list":     handleListUpdate(prop, value); break;
+            case "list": {
+              const listValue = handleListUpdate(prop, value);
+              if (listValue !== undefined) normalized[id] = listValue;
+              break;
+            }
           }
         } catch (error) {
           console.warn("[RiveWidget] property apply failed:", { name, id, path: prop.path, type: prop.type, error });
         }
       }
+      return normalized;
     }
 
     async function onSingularValue(json) {
@@ -1915,7 +2023,11 @@
       }
 
       if (!widgetState.r || !widgetState.riveReady) return;
-      updateDynamicProperties(json);
+      const normalized = updateDynamicProperties(json);
+      for (const [id, value] of Object.entries(normalized)) {
+        if (value !== json[id]) widgetState.pendingInitialValues[id] = value;
+      }
+      publishNormalizedNumbers(json, normalized);
     }
 
     function onSingularButtonClicked(action) {

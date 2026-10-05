@@ -60,7 +60,7 @@ function setup(initial = [row()], itemVMName = 'Row') {
   const context = {window: {addEventListener() {}, rive: {}}, document: {}, SingularWidget: {init() {}},
     console: {warn: (...args) => warnings.push(args), info() {}, log() {}},
     setTimeout, clearTimeout, Uint8Array};
-  vm.runInNewContext(script + ';globalThis.api={widgetState,handleListUpdate,applyPropsToInstance,readInstanceProperties,handleScalarUpdate,normalizeScalarValue,updateDynamicProperties,onSingularValue,publishNormalizedNumbers};', context);
+  vm.runInNewContext(script + ';globalThis.api={widgetState,handleListUpdate,applyPropsToInstance,readInstanceProperties,handleScalarUpdate,normalizeScalarValue,updateDynamicProperties,onSingularValue,generateUIModel};', context);
   const api = context.api;
   Object.assign(api.widgetState, {r: runtime, stateMachineName: 'Machine', _findVMNameForInstance: inst => inst?.viewModelName});
   const prop = {type: 'list', path: 'rows', ownerInstance: root, accessor: rows, itemVMName};
@@ -123,6 +123,30 @@ test('numeric strings are converted according to the row schema', () => {
   const x = setup(); x.apply([{score: '12.5', title: '0012'}]);
   assert.equal(x.rows.instanceAt(0).number('score').value, 12.5);
   assert.equal(x.rows.instanceAt(0).string('title').value, '0012');
+});
+
+test('editing decimals updates Rive without republishing or rewriting the Singular UI', async () => {
+  const x = setup();
+  x.api.widgetState.riveReady = true;
+  x.api.widgetState.defaultVMName = 'Root';
+  const score = field('number', 5);
+  x.api.widgetState.riveProps = {score: {type: 'number', accessor: score.accessor, propertyName: 'score', parentPath: '', vmName: 'Root'}};
+  let uiPublications = 0;
+  x.sdk.setCustomWidgetUI = () => {uiPublications++; return {success: true};};
+  x.api.generateUIModel();
+  assert.equal(uiPublications, 1);
+  for (const value of ['12', '12.', '12.5', 12.5, '-0.125']) await x.api.onSingularValue({score: value});
+  assert.equal(score.accessor.value, -0.125);
+  assert.equal(uiPublications, 1);
+});
+
+test('small decimals arriving in JavaScript exponential notation remain numbers', () => {
+  const x = setup();
+  for (const value of [0.0000001, '0.0000001', String(0.0000001), '-1.25e-7', '1.25E+3']) {
+    const normalized = x.apply([{score: value}]);
+    assert.equal(normalized[0].score, Number(value));
+    assert.equal(x.rows.instanceAt(0).number('score').value, Number(value));
+  }
 });
 
 test('normalized list JSON contains numbers and preserves numeric text and the caller payload', () => {
@@ -191,71 +215,25 @@ test('keyed reordering uses the correct numeric schema for heterogeneous rows', 
   assert.equal(numeric.number('value').value, 26);
 });
 
-test('Singular payload corrections retain numeric types without updating unrelated fields or looping', async () => {
+test('the widget keeps numeric JSON internally without writing back to Singular or changing the input', async () => {
   const x = setup();
   x.api.widgetState.riveReady = true;
   const score = field('number', 5);
   x.api.widgetState.riveProps = {rows: x.prop, score: {type: 'number', accessor: score.accessor}};
-  const model = {fields: [{id: 'rows', type: 'json', title: 'Rows', defaultValue: '[]'},
-    {id: 'score', type: 'number', title: 'Score', defaultValue: 5}], groups: []};
-  x.api.widgetState.customUIModel = model;
-  const calls = [], callbacks = [];
-  x.sdk.setCustomWidgetUI = (publishedModel, cleanup, updates) => {
-    calls.push({cleanup, updates});
-    for (const field of publishedModel.fields) delete field.defaultValue;
-    callbacks.push(x.api.onSingularValue({...updates}));
-    return {success: true};
-  };
-  const original = {rows: '[{"score":"25","title":"0012"}]', score: '10', other: '25'};
+  x.sdk.setCustomWidgetUI = () => assert.fail('Value updates must not republish the UI');
+  const original = {rows: '[{"score":"12.375","title":"0012"}]', score: '3.0', other: '25'};
   await x.api.onSingularValue(original);
-  await Promise.all(callbacks);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].cleanup, false);
-  assert.equal(calls[0].updates.score, 10);
-  assert.equal(JSON.parse(calls[0].updates.rows)[0].score, 25);
-  assert.equal(JSON.parse(calls[0].updates.rows)[0].title, '0012');
-  assert.equal(calls[0].updates.other, undefined);
-  assert.equal(model.fields[0].defaultValue, '[]');
-  assert.equal(x.api.widgetState.pendingInitialValues.score, 10);
-  assert.equal(JSON.parse(x.api.widgetState.pendingInitialValues.rows)[0].score, 25);
-  assert.equal(original.score, '10');
+  assert.equal(x.api.widgetState.pendingInitialValues.score, 3);
+  const savedRows = JSON.parse(x.api.widgetState.pendingInitialValues.rows);
+  assert.equal(savedRows[0].score, 12.375);
+  assert.equal(savedRows[0].title, '0012');
+  assert.equal(x.api.widgetState.pendingInitialValues.other, '25');
+  assert.equal(score.accessor.value, 3);
+  assert.equal(x.rows.instanceAt(0).number('score').value, 12.375);
+  assert.equal(original.score, '3.0');
+  assert.equal(JSON.parse(original.rows)[0].score, '12.375');
   await x.api.onSingularValue(original);
-  assert.equal(calls.length, 1);
   assert.equal(x.plays.length, 1);
-});
-
-test('a rejected numeric payload correction remains retryable', () => {
-  const x = setup();
-  x.api.widgetState.customUIModel = {fields: [], groups: []};
-  let attempts = 0;
-  x.sdk.setCustomWidgetUI = () => ({success: ++attempts > 1, error: 'Rejected'});
-  x.api.publishNormalizedNumbers({score: '25'}, {score: 25});
-  x.api.publishNormalizedNumbers({score: '25'}, {score: 25});
-  assert.equal(attempts, 2);
-  assert.equal(x.warnings.length, 1);
-});
-
-test('Singular callbacks that reformat scalar numbers as strings cannot create a correction loop', async () => {
-  const x = setup();
-  x.api.widgetState.riveReady = true;
-  const score = field('number', 5);
-  x.api.widgetState.riveProps = {score: {type: 'number', accessor: score.accessor}};
-  x.api.widgetState.customUIModel = {fields: [], groups: []};
-  let calls = 0;
-  const callbacks = [];
-  x.sdk.setCustomWidgetUI = (model, cleanup, updates) => {
-    assert.ok(++calls < 5);
-    callbacks.push(x.api.onSingularValue({score: String(updates.score)}));
-    return {success: true};
-  };
-  await x.api.onSingularValue({score: '25'});
-  await Promise.all(callbacks);
-  assert.equal(calls, 1);
-  assert.equal(score.accessor.value, 25);
-  await x.api.onSingularValue({score: 'aaaa'});
-  await Promise.all(callbacks);
-  assert.equal(calls, 3);
-  assert.equal(score.accessor.value, 0);
 });
 
 test('numeric normalization does not restore consumed font keys to pending initial values', async () => {
@@ -283,7 +261,7 @@ test('all three numeric transport variants preserve values without rescaling', (
 
 test('invalid numeric values reset the number to zero without partial parsing', () => {
   const x = setup();
-  for (const value of ['', '   ', null, false, true, 'aaaa', '2a91', '12px', '12,5', '0x19', '2e3', Infinity, -Infinity, NaN, 'Infinity', [], {}]) {
+  for (const value of ['', '   ', null, false, true, 'aaaa', '2a91', '12px', '12,5', '0x19', '1e', '1e+', '1e2x', '1..2', Infinity, -Infinity, NaN, 'Infinity', [], {}]) {
     x.apply([{score: 19}]);
     x.apply([{score: value}]);
     assert.equal(x.rows.instanceAt(0).number('score').value, 0);
@@ -293,7 +271,7 @@ test('invalid numeric values reset the number to zero without partial parsing', 
 
 test('decimal strings retain signs, fractions, whitespace, and leading zeros', () => {
   const x = setup();
-  for (const [value, expected] of [['25', 25], ['  -12.5  ', -12.5], ['+25', 25], ['.5', 0.5], ['1.', 1], ['0012', 12], [0.25, 0.25]]) {
+  for (const [value, expected] of [['25', 25], ['3.0', 3], [3.125, 3.125], ['  -12.5  ', -12.5], ['+25', 25], ['.5', 0.5], ['1.', 1], ['0012', 12], [0.25, 0.25], ['2e3', 2000]]) {
     x.apply([{score: value}]);
     assert.equal(x.rows.instanceAt(0).number('score').value, expected);
   }

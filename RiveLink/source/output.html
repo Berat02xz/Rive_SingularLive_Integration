@@ -51,8 +51,6 @@
       defaultVMName: "",
       globalViewModelNames: [],
       _findVMNameForInstance: null,
-      customUIModel: null,
-      numericPayloadWrites: new Map(),
       referencedFontAssets: {},  // fieldId → { asset, assetName }
       dataBoundFontProperties: {}, // fieldId → { accessor, propertyName, path }
       metricFontData: {},        // fieldId → { family, weight, subset }
@@ -579,8 +577,9 @@
     function parseNumberValue(value) {
       if (typeof value === "string") {
         const text = value.trim();
-        // Accept the entire decimal value, never a numeric prefix of other text.
-        if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(text)) return null;
+        // Accept the entire number, including exponent notation used by small
+        // decimals in JavaScript. Never accept a numeric prefix of other text.
+        if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(text)) return null;
         value = Number(text);
       }
       return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -1642,45 +1641,7 @@
       addReferencedFontFields(fields, groups);
       addReferencedAudioFields(fields, groups);
       const uiModel = { fields, groups };
-      widgetState.customUIModel = uiModel;
-      widgetState.numericPayloadWrites.clear();
-      publishUIModel();
-    }
-
-    function publishUIModel(payloadUpdates) {
-      const model = widgetState.customUIModel;
-      if (!model) return;
-      // Singular mutates field defaults while merging the model. Preserve our
-      // original definitions, and update only the supplied payload fields.
-      return SingularWidget.setCustomWidgetUI({
-        fields: model.fields.map(field => ({ ...field })),
-        groups: model.groups,
-      }, false, payloadUpdates);
-    }
-
-    function publishNormalizedNumbers(original, normalized) {
-      if (!widgetState.customUIModel) return;
-      const updates = {}, previous = new Map();
-      for (const [id, value] of Object.entries(normalized)) {
-        if (value === original[id]) continue;
-        const signature = JSON.stringify([original[id], value]);
-        if (widgetState.numericPayloadWrites.get(id) === signature) continue;
-        previous.set(id, widgetState.numericPayloadWrites.get(id));
-        // Set before calling Singular: it may synchronously deliver onValue.
-        widgetState.numericPayloadWrites.set(id, signature);
-        updates[id] = value;
-      }
-      if (Object.keys(updates).length === 0) return;
-      try {
-        const result = publishUIModel(updates);
-        if (result && result.success === false) throw new Error(result.error || "Payload update rejected");
-      } catch (error) {
-        for (const [id, signature] of previous) {
-          if (signature === undefined) widgetState.numericPayloadWrites.delete(id);
-          else widgetState.numericPayloadWrites.set(id, signature);
-        }
-        console.warn("[RiveWidget] numeric JSON update failed:", error);
-      }
+      SingularWidget.setCustomWidgetUI(uiModel);
     }
 
     // =========================================================================
@@ -1836,8 +1797,6 @@
     function reloadRive(fileUrl) {
       widgetState._loadGen = (widgetState._loadGen || 0) + 1;
       widgetState.riveReady = false;
-      widgetState.customUIModel = null;
-      widgetState.numericPayloadWrites.clear();
       document.getElementById("canvas").classList.remove("ready");
       widgetState.referencedFontAssets = {};
       widgetState.dataBoundFontProperties = {};
@@ -2027,7 +1986,6 @@
       for (const [id, value] of Object.entries(normalized)) {
         if (value !== json[id]) widgetState.pendingInitialValues[id] = value;
       }
-      publishNormalizedNumbers(json, normalized);
     }
 
     function onSingularButtonClicked(action) {

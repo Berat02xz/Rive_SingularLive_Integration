@@ -72,9 +72,9 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 
 - **Runtime:** Pinned WebGL2 and Canvas to Rive runtime `2.44.0`, which includes Rive Semantics support.
 - **Images:** Reject failed HTTP responses and image decoding errors. Call `.play()` after assigning an image so a settled state machine can process the change.
-- **Dynamic controls:** Generate controls from the selected artboard's bound View Model, with nested properties and separate global View Model groups. Nested group titles show the parent model, property name, and child model.
+- **Reworked View Models Controls:** Generate controls from the selected artboard's bound View Model, with nested properties and separate global View Model groups. Nested group titles show the property and child model, with the parent model in the info tooltip.
 - **List rendering:** Preserve authored rows and create added rows from the View Model's default instance, retaining fonts, styles, and internal animation values.
-- **JSON binding:** Assign values using the declared Rive property type. Numeric strings such as `"12.5"` now update number properties correctly; boolean strings are also handled explicitly.
+- **JSON binding:** Assign values using the declared Rive property type. Number properties accept decimal strings such as `"25"` and `"12.5"`; invalid numeric values such as `"aaaa"` or `"2a91"` become `0`. Boolean strings are also handled explicitly.
 - **Table data:** Accept row arrays, single-row objects, and table arrays wrapped under a Control Node ID.
 - **Nested row data:** Support nested View Model objects and enum values in list JSON.
 - **Internal properties:** Hide properties containing `__` from the generated controls and default JSON, and protect them from public JSON writes while their Rive bindings remain active.
@@ -88,4 +88,3 @@ This project is constantly evolving with ongoing bug fixes and improvements in c
 ### Planned
 
 - Explore GPU Canvas and stateful component support, including the effect of disabling `useOffscreenRenderer` on context sharing and memory usage.
-- Verify how Singular's Number, Normalized Number, and Counter controls serialize table values.

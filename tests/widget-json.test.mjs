@@ -138,11 +138,22 @@ test('all three numeric transport variants preserve values without rescaling', (
   assert.equal(first.number('counter').value, 4);
 });
 
-test('invalid numeric values preserve the old value and report the property', () => {
+test('invalid numeric values reset the number to zero without partial parsing', () => {
   const x = setup();
-  for (const value of ['', '   ', null, false, '12px', '12,5', Infinity, 'Infinity']) x.apply([{score: value}]);
-  assert.equal(x.rows.instanceAt(0).number('score').value, 5);
-  assert.ok(x.warnings.every(args => args[1].properties[0].path === 'rows/0/score'));
+  for (const value of ['', '   ', null, false, true, 'aaaa', '2a91', '12px', '12,5', '0x19', '2e3', Infinity, -Infinity, NaN, 'Infinity', [], {}]) {
+    x.apply([{score: 19}]);
+    x.apply([{score: value}]);
+    assert.equal(x.rows.instanceAt(0).number('score').value, 0);
+  }
+  assert.equal(x.warnings.length, 0);
+});
+
+test('decimal strings retain signs, fractions, whitespace, and leading zeros', () => {
+  const x = setup();
+  for (const [value, expected] of [['25', 25], ['  -12.5  ', -12.5], ['+25', 25], ['.5', 0.5], ['1.', 1], ['0012', 12], [0.25, 0.25]]) {
+    x.apply([{score: value}]);
+    assert.equal(x.rows.instanceAt(0).number('score').value, expected);
+  }
 });
 
 test('boolean strings do not turn false into true', () => {
@@ -161,7 +172,11 @@ test('ordinary dynamic numeric and boolean controls use the same normalization',
   };
   x.api.updateDynamicProperties({score: '2.25', visible: 'false'});
   assert.equal(number.accessor.value, 2.25); assert.equal(boolean.accessor.value, false);
-  x.api.updateDynamicProperties({score: ''}); assert.equal(number.accessor.value, 2.25);
+  x.api.updateDynamicProperties({score: ''}); assert.equal(number.accessor.value, 0);
+  x.api.updateDynamicProperties({score: '25'}); assert.equal(number.accessor.value, 25);
+  x.api.updateDynamicProperties({score: '2a91'}); assert.equal(number.accessor.value, 0);
+  x.api.updateDynamicProperties({score: '25'});
+  x.api.updateDynamicProperties({visible: true}); assert.equal(number.accessor.value, 25);
 });
 
 test('internal animation values cannot be overwritten through row JSON', () => {
@@ -178,6 +193,10 @@ test('nested row models and enum values round-trip through JSON', () => {
   const saved = x.api.readInstanceProperties(entry);
   assert.equal(saved.profile.score, 3.5); assert.equal(saved.profile.enabled, false); assert.equal(saved.mode, 'Timer');
   x.apply([{mode: '0'}]); assert.equal(entry.enum('mode').value, 'Clock');
+  x.apply([{mode: 'Timer', profile: {score: '2a91'}}]);
+  assert.equal(nested.number('score').value, 0);
+  x.apply([{mode: 'unknown option'}]); assert.equal(entry.enum('mode').value, 'Timer');
+  assert.equal(x.warnings.length, 1);
 });
 
 test('stable IDs preserve rows when deleting and reordering', () => {

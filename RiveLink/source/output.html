@@ -574,12 +574,20 @@
       return obj;
     }
 
+    function parseNumberValue(value) {
+      if (typeof value === "string") {
+        const text = value.trim();
+        // Accept the entire decimal value, never a numeric prefix of other text.
+        if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(text)) return null;
+        value = Number(text);
+      }
+      return typeof value === "number" && Number.isFinite(value) ? value : null;
+    }
+
     function normalizeScalarValue(type, value) {
       if (type === "number") {
-        const number = typeof value === "number" ? value
-          : typeof value === "string" && value.trim() !== "" ? Number(value.trim()) : NaN;
-        if (!Number.isFinite(number)) throw new TypeError("Expected a finite number or numeric string");
-        return number;
+        const number = parseNumberValue(value);
+        return number === null ? 0 : number;
       }
       if (type === "boolean") {
         if (typeof value === "boolean") return value;
@@ -619,7 +627,7 @@
             const values = accessor && accessor.values;
             let value = val;
             if (values && !values.includes(value)) {
-              const index = normalizeScalarValue("number", val);
+              const index = parseNumberValue(val);
               if (!Number.isInteger(index) || index < 0 || index >= values.length) throw new TypeError("Unknown enum option");
               value = values[index];
             }
@@ -1421,8 +1429,6 @@
 
     function buildViewModelGroupTitle(groupInfo) {
       if (!groupInfo.path) return groupInfo.vmName;
-      const rootMetadata = widgetState.vmMetadata[""];
-      const rootName = (rootMetadata && rootMetadata.vmName) || widgetState.defaultVMName || groupInfo.vmName;
       let nestedPath = "";
       const nesting = groupInfo.path.split("/").map(propertyName => {
         nestedPath = nestedPath ? `${nestedPath}/${propertyName}` : propertyName;
@@ -1430,7 +1436,17 @@
         const vmName = (metadata && metadata.vmName) || (nestedPath === groupInfo.path ? groupInfo.vmName : null);
         return vmName ? `${propertyName} : ${vmName}` : propertyName;
       });
-      return `${rootName} (${nesting.join(" → ")})`;
+      return nesting.join(" → ");
+    }
+
+    function buildViewModelGroupToolTip(groupInfo) {
+      if (!groupInfo.path) return `Properties of "${groupInfo.vmName}"`;
+      const metadata = widgetState.vmMetadata[groupInfo.path];
+      const parentPath = groupInfo.path.split("/").slice(0, -1).join("/");
+      const parentMetadata = widgetState.vmMetadata[parentPath];
+      const parentName = (metadata && metadata.parentVMName) || (parentMetadata && parentMetadata.vmName) || widgetState.defaultVMName;
+      const propertyName = groupInfo.parentProp || groupInfo.path.split("/").pop();
+      return `Properties of "${propertyName}"${parentName ? ` (${parentName})` : ""}`;
     }
 
     function buildGroups(availableArtboards, globalGroupedProperties, groupedProperties, viewModelParentInfo) {
@@ -1449,24 +1465,23 @@
         if (!childIds || childIds.length === 0) continue;
         groups.push({
           id: globalViewModelGroupId(viewModelName),
-          title: `${viewModelName} : Global View Model`,
+          title: viewModelName,
           width: "double",
-          toolTip: `File-wide properties from ${viewModelName}`,
+          toolTip: `Properties of "${viewModelName}"`,
           childIds,
         });
       }
 
       for (const [groupKey, childIds] of Object.entries(groupedProperties)) {
         const groupInfo = viewModelParentInfo[groupKey];
-        const vmName = groupInfo.vmName;
         const path = groupInfo.path;
         const groupTitle = buildViewModelGroupTitle(groupInfo);
         const groupIdKey = `${widgetState.defaultVMName}:${path}`;
         groups.push({
           id: `rivevm${toAlphanumericId(groupIdKey)}${stableIdHash(groupIdKey)}group`,
-          title: `${groupTitle} : View Model`,
+          title: groupTitle,
           width: "double",
-          toolTip: path ? `Properties from ${vmName} at ${path}` : `Properties from ${vmName}`,
+          toolTip: buildViewModelGroupToolTip(groupInfo),
           childIds,
         });
       }

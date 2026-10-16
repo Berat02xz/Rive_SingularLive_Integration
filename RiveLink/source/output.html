@@ -1500,13 +1500,13 @@
     }
 
     function buildViewModelGroupToolTip(groupInfo) {
-      if (!groupInfo.path) return `Properties of "${groupInfo.vmName}"`;
+      if (!groupInfo.path) return `Properties of "${groupInfo.vmName}".`;
       const metadata = widgetState.vmMetadata[groupInfo.path];
       const parentPath = groupInfo.path.split("/").slice(0, -1).join("/");
       const parentMetadata = widgetState.vmMetadata[parentPath];
       const parentName = (metadata && metadata.parentVMName) || (parentMetadata && parentMetadata.vmName) || widgetState.defaultVMName;
       const propertyName = groupInfo.parentProp || groupInfo.path.split("/").pop();
-      return `Properties of "${propertyName}"${parentName ? ` (${parentName})` : ""}`;
+      return `Properties of "${propertyName}" nested View Model${parentName ? ` within "${parentName}" View Model` : ""}.`;
     }
 
     function buildGroups(availableArtboards, globalGroupedProperties, groupedProperties, viewModelParentInfo) {
@@ -1515,7 +1515,7 @@
       if (availableArtboards.length > 0) {
         const childIds = ["riveartboard"];
         if (widgetState.r && widgetState.r.stateMachineNames && widgetState.r.stateMachineNames.length > 0) childIds.push("rivestatemachineselect");
-        groups.push({ id: "artboardgroup", title: "Artboard Selection", width: "double", toolTip: "Select the artboard to display", childIds });
+        groups.push({ id: "artboardgroup", title: "Artboard Selection", width: "double", toolTip: "Select the artboard to display.", childIds });
       }
 
       // Global View Models are file-wide and intentionally appear before the
@@ -1527,7 +1527,7 @@
           id: globalViewModelGroupId(viewModelName),
           title: viewModelName,
           width: "double",
-          toolTip: `Properties of "${viewModelName}"`,
+          toolTip: `Properties of "${viewModelName}" Global View Model.`,
           childIds,
         });
       }
@@ -1568,7 +1568,7 @@
         id: "rivefontgroup",
         title: "Fonts",
         width: "double",
-        toolTip: "Font overrides for referenced text assets in the Rive file",
+        toolTip: "Font overrides for referenced text assets in the Rive file.",
         activeId: "",
         childIds: fontFieldIds,
       });
@@ -1590,7 +1590,7 @@
         id: "riveaudiogroup",
         title: "Audio",
         width: "double",
-        toolTip: "Audio overrides for referenced audio assets in the Rive file",
+        toolTip: "Audio overrides for referenced audio assets in the Rive file.",
         activeId: "",
         childIds: audioFieldIds,
       });

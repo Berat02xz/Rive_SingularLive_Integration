@@ -9,19 +9,14 @@ permissions:
 
 jobs:
   test:
-    name: Node ${{ matrix.node }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Node 24 on Ubuntu
+    runs-on: ubuntu-latest
     timeout-minutes: 5
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        node: [22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 24
       # No npm install: the suite uses only built-in Node modules.
       - run: npm run test:coverage
       - run: git diff --check

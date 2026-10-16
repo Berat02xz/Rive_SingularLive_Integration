@@ -14,7 +14,7 @@ node --test tests/widget-assets.test.mjs
 node --test --test-name-pattern="startup" tests/*.test.mjs
 ```
 
-GitHub Actions runs the coverage command on Windows and Linux with Node 22 and 24 for every push and pull request. Failures return a nonzero exit code. To require a passing run before merging, select these checks in the repository's branch protection settings.
+GitHub Actions runs the coverage command on Ubuntu with Node 24 for every push and pull request. Failures return a nonzero exit code. To require a passing run before merging, select this check in the repository's branch protection settings.
 
 ## What is protected
 

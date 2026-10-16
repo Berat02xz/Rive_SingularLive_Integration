@@ -154,10 +154,8 @@
       return (hash >>> 0).toString(36);
     }
 
-    function globalViewModelFieldId(viewModelName, propertyPath, isFont) {
-      const qualifiedName = `${viewModelName}/${propertyPath}`;
-      const readableName = toAlphanumericId(qualifiedName);
-      return `${isFont ? "rivefontglobal" : "riveglobal"}${readableName}${stableIdHash(qualifiedName)}`;
+    function globalViewModelFieldId(viewModelName, propertyPath) {
+      return toAlphanumericId(`${viewModelName}/${propertyPath}`);
     }
 
     function globalViewModelGroupId(viewModelName) {
@@ -851,11 +849,7 @@
               propData.displayName = pathPrefix
                 ? `${pathPrefix.replace(/\//g, " · ")} · ${property.name}`
                 : property.name;
-              propData.fieldId = globalViewModelFieldId(
-                options.viewModelName,
-                propertyPath,
-                propertyType === "font"
-              );
+              propData.fieldId = globalViewModelFieldId(options.viewModelName, propertyPath);
             }
 
             if (propertyType === "enumType" && accessor.values) propData.enumValues = accessor.values;
@@ -903,11 +897,11 @@
       const props = { ...globalProps, ...normalProps };
       const idCounts = new Map();
       const reservedIds = new Set(["riveartboard", "rivestatemachineselect", "rive_file_url", "rive_layout", "rive_renderer", "show_fps"]);
-      for (const prop of Object.values(props)) {
+      for (const prop of Object.values(normalProps)) {
         if (!prop.internal) idCounts.set(prop.fieldId, (idCounts.get(prop.fieldId) || 0) + 1);
       }
       const usedIds = new Set([...reservedIds, ...idCounts.keys()]);
-      for (const [name, prop] of Object.entries(props)) {
+      for (const [name, prop] of Object.entries(normalProps)) {
         if (prop.internal) continue;
         if (idCounts.get(prop.fieldId) > 1 || reservedIds.has(prop.fieldId) || !prop.fieldId) {
           const base = prop.fieldId || "riveproperty";
@@ -918,7 +912,32 @@
           prop.fieldId = candidate;
           usedIds.add(candidate);
         }
-        if (prop.type === "font") {
+      }
+
+      const occupiedIds = new Set([
+        ...reservedIds,
+        ...Object.values(normalProps).filter(prop => !prop.internal).map(prop => prop.fieldId),
+        ...Object.values(widgetState.referencedFontAssets).map(asset => asset.fieldId),
+        ...Object.values(widgetState.referencedAudioAssets).map(asset => asset.fieldId),
+      ]);
+      const globalIdCounts = new Map();
+      for (const prop of Object.values(globalProps)) {
+        if (!prop.internal) globalIdCounts.set(prop.fieldId, (globalIdCounts.get(prop.fieldId) || 0) + 1);
+      }
+      for (const [name, prop] of Object.entries(globalProps)) {
+        if (prop.internal) continue;
+        if (!prop.fieldId || globalIdCounts.get(prop.fieldId) > 1 || occupiedIds.has(prop.fieldId)) {
+          console.error("[RiveWidget] Global field ID collision; rename the View Model or property", {
+            fieldId: prop.fieldId, viewModel: prop.globalViewModelName, path: prop.path,
+          });
+          delete props[name];
+          continue;
+        }
+        occupiedIds.add(prop.fieldId);
+      }
+
+      for (const [name, prop] of Object.entries(props)) {
+        if (!prop.internal && prop.type === "font") {
           widgetState.dataBoundFontProperties[prop.fieldId] = {
             accessor: prop.accessor, propertyName: name, path: prop.path,
             globalViewModelName: prop.globalViewModelName || null,
@@ -1499,14 +1518,24 @@
       return nesting.join(" → ");
     }
 
-    function buildViewModelGroupToolTip(groupInfo) {
-      if (!groupInfo.path) return `Properties of "${groupInfo.vmName}".`;
+    function buildPropertyGroupToolTip(description, fieldIds, prefix = "") {
+      const example = fieldIds[0];
+      if (!example) return description;
+      const scriptingHint = prefix && fieldIds.every(id => id.startsWith(prefix))
+        ? `When targeted via Composition Scripting, all properties must use the ${prefix} prefix.`
+        : "When targeted via Composition Scripting, use each property's exact field ID.";
+      return `${description}\n${scriptingHint}\nExample: ${example}.`;
+    }
+
+    function buildViewModelGroupToolTip(groupInfo, fieldIds) {
+      if (!groupInfo.path) return buildPropertyGroupToolTip(`Properties of "${groupInfo.vmName}".`, fieldIds);
       const metadata = widgetState.vmMetadata[groupInfo.path];
       const parentPath = groupInfo.path.split("/").slice(0, -1).join("/");
       const parentMetadata = widgetState.vmMetadata[parentPath];
       const parentName = (metadata && metadata.parentVMName) || (parentMetadata && parentMetadata.vmName) || widgetState.defaultVMName;
       const propertyName = groupInfo.parentProp || groupInfo.path.split("/").pop();
-      return `Properties of "${propertyName}" nested View Model${parentName ? ` within "${parentName}" View Model` : ""}.`;
+      const description = `Properties of ${propertyName} nested View Model${parentName ? ` within ${parentName} View Model` : ""}.`;
+      return buildPropertyGroupToolTip(description, fieldIds, toAlphanumericId(groupInfo.path));
     }
 
     function buildGroups(availableArtboards, globalGroupedProperties, groupedProperties, viewModelParentInfo) {
@@ -1527,7 +1556,7 @@
           id: globalViewModelGroupId(viewModelName),
           title: viewModelName,
           width: "double",
-          toolTip: `Properties of "${viewModelName}" Global View Model.`,
+          toolTip: buildPropertyGroupToolTip(`Properties of "${viewModelName}" Global View Model.`, childIds, toAlphanumericId(viewModelName)),
           childIds,
         });
       }
@@ -1541,7 +1570,7 @@
           id: `rivevm${toAlphanumericId(groupIdKey)}${stableIdHash(groupIdKey)}group`,
           title: groupTitle,
           width: "double",
-          toolTip: buildViewModelGroupToolTip(groupInfo),
+          toolTip: buildViewModelGroupToolTip(groupInfo, childIds),
           childIds,
         });
       }
@@ -1847,13 +1876,17 @@
         ? { ...widgetState.pendingInitialValues, ...json }
         : { ...json };
 
-      // Consumed rivefont* keys are deleted from pendingInitialValues to avoid a reload loop.
+      const propertyTypes = new Map(Object.entries(widgetState.riveProps)
+        .map(([name, prop]) => [prop.fieldId || toAlphanumericId(name), prop.type]));
+
+      // Consumed font keys are deleted from pendingInitialValues to avoid a reload loop.
       let fontDataChanged = false;
       const changedFontIds = [];
       for (const [key, value] of Object.entries(json)) {
-        if (!key.startsWith("rivefont")) continue;
+        if (propertyTypes.has(key) && propertyTypes.get(key) !== "font") continue;
+        if (!key.startsWith("rivefont") && !widgetState.dataBoundFontProperties[key]) continue;
         var _fontDataRaw = value != null ? value.fontData : undefined; const fontData = _fontDataRaw != null ? _fontDataRaw : value;
-        if (!fontData || !fontData.family) continue;
+        if (!fontData || typeof fontData.family !== "string" || !fontData.family) continue;
         const incoming = {
           family: fontData.family,
           weight: String(fontData.weight != null ? fontData.weight : "400"),
@@ -1869,11 +1902,14 @@
           fontDataChanged = true;
           changedFontIds.push(key);
         }
-        if (widgetState.pendingInitialValues) delete widgetState.pendingInitialValues[key];
+        // Before discovery, a prefix alone does not identify an asset control.
+        if (widgetState.riveReady || widgetState.referencedFontAssets[key] || widgetState.dataBoundFontProperties[key]) {
+          delete widgetState.pendingInitialValues[key];
+        }
       }
       let audioUrlChanged = false;
       for (const [key, value] of Object.entries(json)) {
-        if (!key.startsWith("riveaudio")) continue;
+        if (!key.startsWith("riveaudio") || propertyTypes.has(key)) continue;
         // "audio" field type is undocumented — tolerate both string and object payloads
         let url = "";
         if (typeof value === "string") url = value;
@@ -1882,7 +1918,7 @@
         const changed = existing !== url;
         widgetState.audioAssetUrls[key] = url;
         if (changed && widgetState.referencedAudioAssets[key]) audioUrlChanged = true;
-        if (widgetState.pendingInitialValues) delete widgetState.pendingInitialValues[key];
+        if (widgetState.riveReady || widgetState.referencedAudioAssets[key]) delete widgetState.pendingInitialValues[key];
       }
       // Audio changes still require a reload so assetLoader can apply the decoded
       // source synchronously. Fonts are swapped live below and do not reload Rive.

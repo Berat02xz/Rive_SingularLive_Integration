@@ -1,0 +1,11 @@
+{
+  "name": "rive-singular-widget-tests",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=\"**/RiveLink/source/output.html\" --test-coverage-lines=90 --test-coverage-branches=80 --test-coverage-functions=90 tests/*.test.mjs"
+  }
+}

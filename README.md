@@ -72,10 +72,17 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 
 - **Runtime:** Pinned WebGL2 and Canvas to Rive runtime `2.44.0`, which includes Rive Semantics support.
 - **Reworked View Models Controls:** Generate controls from the selected artboard's bound View Model, with nested properties and separate global View Model groups. Nested group titles show the property and child model, with the parent model in the info tooltip.
+- **Global property IDs:** Use the View Model name followed by the property path, preserving capitalization: `Globalcolor1`, `GlobalgradientAmount`, or `Globalscoreboardtitle`. Global fonts follow the same rule. Conflicting global IDs are reported and omitted instead of receiving hash suffixes; artboard property naming is unchanged.
 - **JSON binding:** Assign values using the declared Rive property type. Number properties accept decimal strings such as `"25"` and `"12.5"`; invalid numeric values such as `"aaaa"` or `"2a91"` become `0`. Boolean strings are also handled explicitly.
 - **Internal properties:** Hide properties containing `__` from the generated controls and default JSON, and protect them from public JSON writes while their Rive bindings remain active.
 
 ---
+
+## Tests
+
+Run `npm test` from the repository root with Node.js 22 or 24. No installation or external services are needed. Run `npm run test:coverage` to check widget code coverage. GitHub Actions runs the suite on pushes and pull requests.
+
+See the [test coverage map and release checks](tests/README.md) for the behavior protected by each test file and the checks that still need Singular/RAV.
 
 ### 🧪 Note  
 This project is constantly evolving with ongoing bug fixes and improvements in collaboration with the Singular team.  

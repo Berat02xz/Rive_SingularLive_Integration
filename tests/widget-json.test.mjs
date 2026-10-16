@@ -1,72 +1,190 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import vm from 'node:vm';
 import {test} from 'node:test';
+import {model, field, row, list, setup, setupViewModels} from './helpers/widget-harness.mjs';
 
-const html = fs.readFileSync(new URL('../RiveLink/source/output.html', import.meta.url), 'utf8');
-const script = html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('</script>'));
+test('global color IDs use Model plus property in the UI, tooltip and runtime updates', async () => {
+  const writes = [];
+  const global = model('Global', {color1: {type: 'color', accessor: {value: 0xff000000, rgba: (...args) => writes.push(args)}}});
+  const main = model('Main', {topicsPosX: field('number', 0)});
+  const x = setupViewModels(main, {Global: global});
+  let ui;
+  x.sdk.setCustomWidgetUI = value => {ui = value;};
+  x.api.generateUIModel();
+  assert.equal(ui.fields.find(value => value.title === 'color1').id, 'Globalcolor1');
+  assert.ok(ui.groups.find(value => value.title === 'Global').toolTip.includes('Example: Globalcolor1.'));
+  await x.api.onSingularValue({Globalcolor1: {r: 12, g: 34, b: 56, a: 1}, topicsPosX: '3.0'});
+  assert.deepEqual(writes, [[12, 34, 56, 255]]);
+  assert.equal(main.number('topicsPosX').value, 3);
+  assert.equal(x.errors.length, 0);
+});
 
-function model(name, fields) {
-  const result = {viewModelName: name, fields,
-    properties: Object.entries(fields).map(([name, field]) => ({name, type: field.type}))};
-  result.nativeInstance = {isAliasOf(other) { return this === other; }};
-  function lookup(path) {
-    const parts = path.split('/');
-    let current = result;
-    for (const key of parts.slice(0, -1)) current = current?.fields[key]?.instance;
-    return current?.fields[parts.at(-1)];
-  }
-  for (const type of ['string', 'number', 'boolean', 'image', 'font', 'color', 'list', 'trigger', 'artboard']) {
-    result[type] = path => { const field = lookup(path); return field?.type === type ? field.accessor : null; };
-  }
-  result.enum = path => lookup(path)?.type === 'enumType' ? lookup(path).accessor : null;
-  result.viewModel = path => lookup(path)?.instance || null;
-  return result;
-}
-function field(type, initial) {
-  let value = initial;
-  return {type, accessor: {get value() {return value;}, set value(next) {
-    if (['string', 'number', 'boolean'].includes(type)) assert.equal(typeof next, type);
-    value = next;
-  }}};
-}
-function row(values = {}, name = 'Row') {
-  const result = model(name, {
-    id: field('string', ''), title: field('string', 'authored'), subtitle: field('string', 'subtitle'),
-    visible: field('boolean', true), size__: field('number', 24), score: field('number', 5),
-    ordinaryNumber: field('number', 0), normalizedNumber: field('number', 0), counter: field('number', 0),
+test('global nested property paths and View Model casing remain distinct', () => {
+  const child = model('Scoreboard', {inOut: field('boolean', false)});
+  const first = model('Global', {scoreboard: {type: 'viewModel', instance: child}, color1: field('number', 0)});
+  const second = model('Theme', {color1: field('number', 0)});
+  const x = setupViewModels(model('Main', {}), {Global: first, Theme: second});
+  assert.equal(x.discovered.props['global:Global:scoreboard/inOut'].fieldId, 'GlobalscoreboardinOut');
+  assert.equal(x.discovered.props['global:Global:color1'].fieldId, 'Globalcolor1');
+  assert.equal(x.discovered.props['global:Theme:color1'].fieldId, 'Themecolor1');
+  x.api.updateDynamicProperties({GlobalscoreboardinOut: true, Globalcolor1: '12.5', Themecolor1: '25'});
+  assert.equal(child.boolean('inOut').value, true);
+  assert.equal(first.number('color1').value, 12.5);
+  assert.equal(second.number('color1').value, 25);
+});
+
+test('global fonts with Model plus property IDs still decode and update their bound accessor', async () => {
+  const global = model('Global', {titleFont: field('font', null)});
+  const x = setupViewModels(model('Main', {}), {Global: global});
+  let released = 0;
+  const decoded = {unref() {released++;}};
+  x.fontRuntime.decodeFont = async bytes => {assert.deepEqual(Array.from(bytes), [1, 2]); return decoded;};
+  x.api.fontBytesCache.set('Test Font|400|auto', Promise.resolve(new Uint8Array([1, 2])));
+  assert.equal(x.discovered.props['global:Global:titleFont'].fieldId, 'GlobaltitleFont');
+  await x.api.onSingularValue({GlobaltitleFont: {fontData: {family: 'Test Font', weight: '400'}}});
+  assert.equal(global.font('titleFont').value, decoded);
+  assert.equal(x.api.widgetState.metricFontData.GlobaltitleFont.family, 'Test Font');
+  assert.equal(x.api.widgetState.pendingInitialValues.GlobaltitleFont, undefined);
+  assert.equal(released, 1);
+});
+
+test('global font values received before discovery are applied after binding', async () => {
+  const global = model('Global', {font: field('font', null)});
+  const x = setupViewModels(model('Main', {}), {Global: global});
+  const decoded = {unref() {}};
+  x.fontRuntime.decodeFont = async () => decoded;
+  x.api.fontBytesCache.set('Test Font|400|auto', Promise.resolve(new Uint8Array([1])));
+  x.api.widgetState.riveReady = false;
+  x.api.widgetState.dataBoundFontProperties = {};
+  await x.api.onSingularValue({Globalfont: {fontData: {family: 'Test Font'}}});
+  assert.ok(x.api.widgetState.pendingInitialValues.Globalfont);
+  x.api.getAllViewModelProperties(x.runtime);
+  x.api.widgetState.riveReady = true;
+  await x.api.onSingularValue({...x.api.widgetState.pendingInitialValues});
+  assert.equal(global.font('font').value, decoded);
+  assert.equal(x.api.widgetState.pendingInitialValues.Globalfont, undefined);
+});
+
+test('font and audio prefixes cannot consume known numeric or list View Model properties', async () => {
+  const rows = list([row()]);
+  const global = model('rive', {audioLevel: field('number', 0), fontRows: {type: 'list', accessor: rows}});
+  const x = setupViewModels(model('Main', {}), {rive: global});
+  x.api.widgetState.riveReady = false;
+  await x.api.onSingularValue({riveaudioLevel: 12.5, rivefontRows: {family: [{score: '12.5', title: 'updated'}]}});
+  assert.equal(x.api.widgetState.pendingInitialValues.riveaudioLevel, 12.5);
+  assert.ok(x.api.widgetState.pendingInitialValues.rivefontRows);
+  assert.equal(x.api.widgetState.audioAssetUrls.riveaudioLevel, undefined);
+  assert.equal(x.api.widgetState.metricFontData.rivefontRows, undefined);
+  x.api.widgetState.riveReady = true;
+  await x.api.onSingularValue({...x.api.widgetState.pendingInitialValues});
+  assert.equal(global.number('audioLevel').value, 12.5);
+  assert.equal(rows.instanceAt(0).number('score').value, 12.5);
+  assert.equal(rows.instanceAt(0).string('title').value, 'updated');
+});
+
+test('prefixed global values survive startup before their property metadata is available', async () => {
+  const rows = list([row()]);
+  const global = model('rive', {audioLevel: field('number', 0), fontRows: {type: 'list', accessor: rows}});
+  const x = setupViewModels(model('Main', {}), {rive: global});
+  x.api.widgetState.riveReady = false;
+  x.api.widgetState.riveProps = {};
+  await x.api.onSingularValue({riveaudioLevel: 12.5, rivefontRows: {family: [{score: '12.5'}]}});
+  assert.equal(x.api.widgetState.pendingInitialValues.riveaudioLevel, 12.5);
+  assert.ok(x.api.widgetState.pendingInitialValues.rivefontRows);
+  assert.equal(x.api.widgetState.metricFontData.rivefontRows, undefined);
+  x.api.widgetState.riveProps = x.api.getAllViewModelProperties(x.runtime).props;
+  x.api.widgetState.riveReady = true;
+  await x.api.onSingularValue({...x.api.widgetState.pendingInitialValues});
+  assert.equal(global.number('audioLevel').value, 12.5);
+  assert.equal(rows.instanceAt(0).number('score').value, 12.5);
+});
+
+test('referenced fonts, normal bound fonts and audio controls keep their existing routing', async () => {
+  const fonts = [];
+  const main = model('Main', {titleFont: field('font', null)});
+  const x = setupViewModels(main, {}, {
+    referencedFontAssets: {rivefontInter: {fieldId: 'rivefontInter', asset: {setFont(value) {fonts.push(value);}}}},
+    referencedAudioAssets: {riveaudioMusic: {fieldId: 'riveaudioMusic', asset: {}}},
   });
-  for (const [key, value] of Object.entries(values)) result.fields[key].accessor.value = value;
-  return result;
-}
-function list(initial) {
-  return {
-    rows: [...initial], removed: 0, failAdd: false,
-    get length() {return this.rows.length;},
-    instanceAt(i) {return this.rows[i];},
-    addInstance(value) {if (this.failAdd) return false; this.rows.push(value); return true;},
-    addInstanceAt(value, i) {if (this.failAdd) return false; this.rows.splice(i, 0, value); return true;},
-    removeInstanceAt(i) {this.removed++; this.rows.splice(i, 1);},
-    swap(a, b) {[this.rows[a], this.rows[b]] = [this.rows[b], this.rows[a]];},
+  let decoded = 0, released = 0;
+  x.fontRuntime.decodeFont = async () => ({id: ++decoded, unref() {released++;}});
+  x.api.fontBytesCache.set('Test Font|400|auto', Promise.resolve(new Uint8Array([1])));
+  await x.api.onSingularValue({
+    rivefontInter: {fontData: {family: 'Test Font'}},
+    rivefontproptitleFont: {fontData: {family: 'Test Font'}},
+    riveaudioMusic: {url: 'https://example.com/music.mp3'},
+  });
+  assert.equal(fonts.length, 1);
+  assert.ok(main.font('titleFont').value);
+  assert.equal(decoded, 2);
+  assert.equal(released, 2);
+  assert.equal(x.api.widgetState.audioAssetUrls.riveaudioMusic, 'https://example.com/music.mp3');
+  assert.equal(x.api.widgetState.pendingInitialValues.rivefontInter, undefined);
+  assert.equal(x.api.widgetState.pendingInitialValues.rivefontproptitleFont, undefined);
+  assert.equal(x.api.widgetState.pendingInitialValues.riveaudioMusic, undefined);
+});
+
+test('font and audio startup data remain cached until asset discovery', async () => {
+  const x = setupViewModels(model('Main', {}), {});
+  x.api.widgetState.riveReady = false;
+  await x.api.onSingularValue({rivefontInter: {fontData: {family: 'Test Font'}}, riveaudioMusic: 'https://example.com/music.mp3'});
+  assert.equal(x.api.widgetState.metricFontData.rivefontInter.family, 'Test Font');
+  assert.equal(x.api.widgetState.audioAssetUrls.riveaudioMusic, 'https://example.com/music.mp3');
+  assert.ok(x.api.widgetState.pendingInitialValues.rivefontInter);
+  assert.ok(x.api.widgetState.pendingInitialValues.riveaudioMusic);
+  x.api.widgetState.referencedFontAssets.rivefontInter = {asset: {}};
+  x.api.widgetState.referencedAudioAssets.riveaudioMusic = {asset: {}};
+  x.api.widgetState.riveReady = true;
+  await x.api.onSingularValue({...x.api.widgetState.pendingInitialValues});
+  assert.equal(x.api.widgetState.pendingInitialValues.rivefontInter, undefined);
+  assert.equal(x.api.widgetState.pendingInitialValues.riveaudioMusic, undefined);
+});
+
+test('a global ID collision preserves the existing Main control and reports the omitted global', () => {
+  const main = model('Main', {Globalcolor1: field('number', 1)});
+  const global = model('Global', {color1: field('number', 2)});
+  const x = setupViewModels(main, {Global: global});
+  assert.equal(x.discovered.props.Globalcolor1.fieldId, 'Globalcolor1');
+  assert.equal(x.discovered.props['global:Global:color1'], undefined);
+  assert.equal(x.errors.length, 1);
+  assert.equal(x.errors[0][1].fieldId, 'Globalcolor1');
+  x.api.updateDynamicProperties({Globalcolor1: 10});
+  assert.equal(main.number('Globalcolor1').value, 10);
+  assert.equal(global.number('color1').value, 2);
+});
+
+test('ambiguous Model plus property names and sanitized names are reported without hashes', () => {
+  const globals = {
+    AB: model('AB', {c: field('number', 0)}),
+    A: model('A', {Bc: field('number', 0)}),
+    Global: model('Global', {'score value': field('number', 0), 'score-value': field('number', 0), count: field('number', 0)}),
   };
-}
-function setup(initial = [row()], itemVMName = 'Row') {
-  const warnings = [], plays = [];
-  const rows = list(initial);
-  const root = model('Root', {rows: {type: 'list', accessor: rows}});
-  const definitions = new Map([['Row', {properties: row().properties, defaultInstance: () => row(),
-    instance: () => row({size__: 0, visible: false})}]]);
-  const runtime = {viewModelInstance: root, viewModelByName: name => definitions.get(name), play: name => plays.push(name)};
-  const context = {window: {addEventListener() {}, rive: {}}, document: {}, SingularWidget: {init() {}},
-    console: {warn: (...args) => warnings.push(args), info() {}, log() {}},
-    setTimeout, clearTimeout, Uint8Array};
-  vm.runInNewContext(script + ';globalThis.api={widgetState,handleListUpdate,applyPropsToInstance,readInstanceProperties,handleScalarUpdate,normalizeScalarValue,updateDynamicProperties,onSingularValue,generateUIModel};', context);
-  const api = context.api;
-  Object.assign(api.widgetState, {r: runtime, stateMachineName: 'Machine', _findVMNameForInstance: inst => inst?.viewModelName});
-  const prop = {type: 'list', path: 'rows', ownerInstance: root, accessor: rows, itemVMName};
-  return {api, rows, prop, root, runtime, warnings, plays, definitions, sdk: context.SingularWidget,
-    apply: data => api.handleListUpdate(prop, data)};
-}
+  const x = setupViewModels(model('Main', {}), globals);
+  assert.deepEqual(Object.keys(x.discovered.props), ['global:Global:count']);
+  assert.equal(x.discovered.props['global:Global:count'].fieldId, 'Globalcount');
+  assert.equal(x.errors.length, 4);
+});
+
+test('global IDs cannot replace configuration or referenced asset controls', () => {
+  const globals = {
+    rive: model('rive', {artboard: field('number', 0)}),
+    rivefont: model('rivefont', {Inter: field('number', 0)}),
+    riveaudio: model('riveaudio', {Music: field('number', 0)}),
+  };
+  const x = setupViewModels(model('Main', {}), globals, {
+    referencedFontAssets: {font: {fieldId: 'rivefontInter'}},
+    referencedAudioAssets: {audio: {fieldId: 'riveaudioMusic'}},
+  });
+  assert.equal(Object.keys(x.discovered.props).length, 0);
+  assert.equal(x.errors.length, 3);
+});
+
+test('adding globals does not rename existing disambiguated Main IDs', () => {
+  const main = model('Main', {'score value': field('number', 0), 'score-value': field('number', 0)});
+  const before = setupViewModels(main, {}).discovered.props;
+  const x = setupViewModels(main, {Global: model('Global', {color1: field('number', 0)})});
+  assert.equal(x.discovered.props['score value'].fieldId, before['score value'].fieldId);
+  assert.equal(x.discovered.props['score-value'].fieldId, before['score-value'].fieldId);
+});
 
 test('first JSON update retains authored row identity and internal styling', () => {
   const original = row(); const x = setup([original]);

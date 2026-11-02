@@ -323,3 +323,118 @@ test('JSON images: invalid URLs are reported while unrelated row fields still ap
   assert.equal(x.warnings.length, 1);
   assert.equal(x.warnings[0][1].properties[0].path, 'rows/0/photo');
 });
+
+// Rive's instanceAt() returns new JS wrappers around the same native row.
+function useNativeAliases(rows) {
+  const instanceAt = rows.instanceAt.bind(rows);
+  rows.instanceAt = index => Object.create(instanceAt(index));
+}
+
+test('JSON images: scalar edits and native list reorders preserve unchanged pictures', async () => {
+  const entries = ['a', 'b'].map(id => model('Row', {
+    id: field('string', id), score: field('number', 0), photo: field('image', null),
+  }));
+  const x = setup(entries);
+  useNativeAliases(x.rows);
+  let requests = 0;
+  x.context.fetch = async () => {requests++; return bytesResponse();};
+  x.fontRuntime.decodeImage = async () => ({});
+  const items = entries.map(entry => ({id: entry.string('id').value, score: 0, photo: `https://media.test/${entry.string('id').value}.png`}));
+  x.apply(items); await flushAsync();
+  const pictures = entries.map(entry => entry.image('photo').value);
+  x.apply(items.map((item, i) => ({...item, score: i + 1}))); await flushAsync();
+  x.rows.rows.reverse(); // An authored Rive sort can reorder the native list.
+  x.apply([...items].reverse().map(item => ({...item, score: 5}))); await flushAsync();
+  assert.equal(requests, 2);
+  entries.forEach((entry, i) => assert.equal(entry.image('photo').value, pictures[i]));
+  assert.equal(entries[0].number('score').value, 5);
+  assert.equal(entries[1].number('score').value, 5);
+});
+
+test('JSON images: nested native aliases retain image state while edited siblings update', async () => {
+  const profile = model('Profile', {photo: field('image', null), title: field('string', '')});
+  let child = profile;
+  const entry = model('Row', {id: field('string', 'a'), profile: {type: 'viewModel', instance: profile}});
+  entry.viewModel = key => key === 'profile' ? Object.create(child) : null;
+  const x = setup([entry]);
+  let requests = 0;
+  x.context.fetch = async () => {requests++; return bytesResponse();};
+  x.fontRuntime.decodeImage = async () => ({});
+  x.apply([{id: 'a', profile: {title: 'first', photo: 'https://media.test/a.png'}}]); await flushAsync();
+  const picture = profile.image('photo').value;
+  x.apply([{id: 'a', profile: {title: 'second', photo: 'https://media.test/a.png'}}]); await flushAsync();
+  assert.equal(requests, 1);
+  assert.equal(profile.image('photo').value, picture);
+  assert.equal(profile.string('title').value, 'second');
+  child = model('Profile', {photo: field('image', null), title: field('string', '')});
+  x.apply([{id: 'a', profile: {title: 'replacement', photo: 'https://media.test/a.png'}}]); await flushAsync();
+  assert.equal(requests, 2);
+  assert.ok(child.image('photo').value);
+  assert.equal(child.string('title').value, 'replacement');
+});
+
+test('JSON images: repeated table edits share pending loads and newer selections win', async () => {
+  const entry = model('Row', {id: field('string', 'a'), score: field('number', 0), photo: field('image', null)});
+  const x = setup([entry]), first = deferred(), second = deferred();
+  let requests = 0;
+  x.context.fetch = url => {requests++; return url.endsWith('a.png') ? first.promise : second.promise;};
+  x.fontRuntime.decodeImage = async bytes => ({id: bytes[0]});
+  x.apply([{id: 'a', score: 0, photo: 'https://media.test/a.png'}]);
+  x.apply([{id: 'a', score: 1, photo: 'https://media.test/a.png'}]);
+  x.apply([{id: 'a', score: 2, photo: 'https://media.test/b.png'}]);
+  second.resolve(bytesResponse([2])); await flushAsync();
+  first.resolve(bytesResponse([1])); await flushAsync();
+  assert.equal(requests, 2);
+  assert.equal(entry.image('photo').value.id, 2);
+});
+
+test('JSON images: matching row IDs in separate lists do not share previous-image history', async () => {
+  let triggers = 0;
+  const entries = [0, 1].map(() => model('Row', {id: field('string', 'same'), photo: field('image', null),
+    photoUpdate__: {type: 'trigger', accessor: {trigger() {triggers++;}}}}));
+  const x = setup(entries);
+  x.context.fetch = async () => bytesResponse();
+  x.fontRuntime.decodeImage = async () => ({});
+  x.api.applyImageProperty(entries[0], 'photo', 'https://media.test/a.png', {id: 'same'}); await flushAsync();
+  x.api.applyImageProperty(entries[1], 'photo', 'https://media.test/b.png', {id: 'same'}); await flushAsync();
+  assert.ok(entries[1].image('photo').value);
+  assert.equal(triggers, 0);
+  assert.equal(x.plays.length, 2);
+});
+
+test('JSON images: reselecting the applied URL cancels a pending replacement', async () => {
+  const entry = model('Row', {photo: field('image', null)}), x = setup([entry]), gate = deferred();
+  x.context.fetch = async () => bytesResponse([1]);
+  x.fontRuntime.decodeImage = async bytes => ({id: bytes[0]});
+  await x.api.applyImageProperty(entry, 'photo', 'https://media.test/a.png');
+  const original = entry.image('photo').value;
+  x.context.fetch = () => gate.promise;
+  const pending = x.api.applyImageProperty(entry, 'photo', 'https://media.test/b.png');
+  await x.api.applyImageProperty(entry, 'photo', 'https://media.test/a.png');
+  gate.resolve(bytesResponse([2])); await pending;
+  assert.equal(entry.image('photo').value, original);
+  assert.equal(x.plays.length, 1);
+});
+
+test('JSON images: failures preserve the picture, warn and allow a retry', async () => {
+  const authored = {}, entry = model('Row', {photo: field('image', authored)}), x = setup([entry]);
+  x.context.fetch = async () => ({ok: false, status: 404});
+  await x.api.applyImageProperty(entry, 'photo', 'https://media.test/a.png');
+  assert.equal(entry.image('photo').value, authored);
+  assert.equal(x.warnings.length, 1);
+  x.context.fetch = async () => bytesResponse();
+  const decoded = {}; x.fontRuntime.decodeImage = async () => decoded;
+  await x.api.applyImageProperty(entry, 'photo', 'https://media.test/a.png');
+  assert.equal(entry.image('photo').value, decoded);
+});
+
+test('JSON images: an old runtime cannot receive a late image assignment', async () => {
+  const entry = model('Row', {photo: field('image', null)}), x = setup([entry]), gate = deferred();
+  x.context.fetch = () => gate.promise;
+  x.fontRuntime.decodeImage = async () => ({});
+  const pending = x.api.applyImageProperty(entry, 'photo', 'https://media.test/a.png');
+  x.api.widgetState.r = {};
+  gate.resolve(bytesResponse()); await pending;
+  assert.equal(entry.image('photo').value, null);
+  assert.equal(x.plays.length, 0);
+});

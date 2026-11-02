@@ -64,8 +64,8 @@
         "Contain", "Cover", "Fill", "FitWidth", "FitHeight", "ScaleDown", "Layout", "None",
       ],
       runtimeSources: {
-        webgl2: "https://unpkg.com/@rive-app/webgl2@2.44.0/rive.js",
-        canvas: "https://unpkg.com/@rive-app/canvas@2.44.0/rive.js",
+        webgl2: "https://unpkg.com/@rive-app/webgl2@2.49.1/rive.js",
+        canvas: "https://unpkg.com/@rive-app/canvas@2.49.1/rive.js",
       },
     };
 
@@ -86,8 +86,8 @@
       };
     }
 
-    const imageUrlHistory = {};
-    const instanceImageUrls = new WeakMap();
+    const instanceImageStates = new WeakMap();
+    const instanceNestedModels = new WeakMap();
     function normalizeImageUrl(url) {
       if (url.startsWith("//")) return "https:" + url;
       if (!/^(https?:|data:)/.test(url)) return "https://" + url;
@@ -655,11 +655,17 @@
             handleColorUpdate({ accessor: inst.color(key) }, val);
           } else if (property.type === "image") {
             if (typeof val !== "string") throw new TypeError("Expected an image URL string");
-            if (val) applyImageProperty(inst, key, val, itemData);
+            if (val) applyImageProperty(inst, key, val);
           } else if (property.type === "viewModel") {
             if (!val || typeof val !== "object" || Array.isArray(val)) throw new TypeError("Expected a nested property object");
-            const nested = inst.viewModel(key);
+            let nested = inst.viewModel(key);
             if (!nested) throw new Error("Nested View Model is not bound");
+            // Accessors may return fresh wrappers for the same native child.
+            let children = instanceNestedModels.get(inst);
+            if (!children) { children = new Map(); instanceNestedModels.set(inst, children); }
+            const previous = children.get(key);
+            if (previous && sameViewModelInstance(previous, nested)) nested = previous;
+            children.set(key, nested);
             applyPropsToInstance(nested, val, path, report, depth + 1);
           }
         } catch (error) {
@@ -671,43 +677,52 @@
 
     // Image before/after pair: new picture -> "<key>", previous -> "<key>__",
     // then fire the "<key>Update__" trigger so the item state machine can crossfade.
-    function applyImageProperty(inst, key, rawUrl, itemData) {
+    function applyImageProperty(inst, key, rawUrl) {
       const imgAcc = inst.image(key);
       if (!imgAcc) return;
       const url = normalizeImageUrl(rawUrl);
       const instance = widgetState.r;
       const runtime = window.rive;
 
-      let seen = instanceImageUrls.get(inst);
-      if (!seen) { seen = {}; instanceImageUrls.set(inst, seen); }
-      if (seen[key] === url) return;
-
-      const itemKey = resolveItemKey(itemData);
-      const histKey = itemKey ? itemKey + "|" + key : null;
-      const prevUrl = histKey ? imageUrlHistory[histKey] : seen[key];
+      let properties = instanceImageStates.get(inst);
+      if (!properties) { properties = new Map(); instanceImageStates.set(inst, properties); }
+      let state = properties.get(key);
+      if (!state) { state = { generation: 0 }; properties.set(key, state); }
+      // Deduplicate both applied and in-flight images. A return to the applied
+      // URL also invalidates a different pending request.
+      if (state.pendingUrl === url) return;
+      const generation = ++state.generation;
+      state.pendingUrl = url;
+      if (state.currentUrl === url) { state.pendingUrl = null; return; }
+      const prevUrl = state.currentUrl;
       const isChange = prevUrl !== undefined && prevUrl !== url;
 
-      (async () => {
+      return (async () => {
         try {
           const beforeAcc = inst.image(key + "__");
           const trigger = inst.trigger ? inst.trigger(key + "Update__") : null;
           if (isChange) {
             const fetchOld = beforeAcc ? decodeImageFromUrl(prevUrl, runtime).catch(() => null) : Promise.resolve(null);
             const [oldImage, newImage] = await Promise.all([fetchOld, decodeImageFromUrl(url, runtime)]);
-            if (instance !== widgetState.r) return;
+            if (instance !== widgetState.r || generation !== state.generation) return;
             if (beforeAcc && oldImage) beforeAcc.value = oldImage;
             imgAcc.value = newImage;
             if (trigger && typeof trigger.trigger === "function") trigger.trigger();
           } else {
             const image = await decodeImageFromUrl(url, runtime);
-            if (instance !== widgetState.r) return;
+            if (instance !== widgetState.r || generation !== state.generation) return;
             imgAcc.value = image;
             if (beforeAcc) beforeAcc.value = image;
           }
-          seen[key] = url;
-          if (histKey) imageUrlHistory[histKey] = url;
+          state.currentUrl = url;
           resumeAfterPropertyUpdate(instance);
-        } catch {}
+        } catch (error) {
+          if (instance === widgetState.r && generation === state.generation) {
+            console.warn("[RiveWidget] list image apply failed:", { key, error });
+          }
+        } finally {
+          if (generation === state.generation) state.pendingUrl = null;
+        }
       })();
     }
 
@@ -1065,13 +1080,17 @@
       if (length !== items.length || length < 2) return false;
 
       const current = [];
+      const retainedByKey = new Map(Array.from(instanceMap.values(), row => [resolveInstanceKey(row), row]));
       const positionByKey = new Map();
       for (let i = 0; i < length; i++) {
         let inst;
         try { inst = listAcc.instanceAt(i); } catch {}
         const key = resolveInstanceKey(inst);
         if (!inst || !key || positionByKey.has(key)) return false;
-        current[i] = inst;
+        // Keep the wrapper that owns this row's image state. instanceAt()
+        // returns a fresh JS object even when the native row is unchanged.
+        const retained = retainedByKey.get(key);
+        current[i] = retained && sameViewModelInstance(retained, inst) ? retained : inst;
         positionByKey.set(key, i);
       }
 

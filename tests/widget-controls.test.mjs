@@ -80,14 +80,16 @@ test('controls: nested group titles show their complete hierarchy and tooltips s
   assert.deepEqual(plain(groups.map(group => group.title)), [
     'Theme', 'Main', 'propertyOfLive : Live', 'propertyOfLive : Live → propertyOfScoreboard : Scoreboard',
   ]);
-  assert.equal(groups[0].toolTip, 'Properties of "Theme" Global View Model.\nWhen targeted via Composition Scripting, all properties must use the Theme prefix.\nExample: Themecolor1.');
-  assert.equal(groups[1].toolTip, 'Properties of "Main".\nWhen targeted via Composition Scripting, use each property\'s exact field ID.\nExample: score.');
-  assert.equal(groups[3].toolTip, 'Properties of propertyOfScoreboard nested View Model within Live View Model.\nWhen targeted via Composition Scripting, all properties must use the propertyOfLivepropertyOfScoreboard prefix.\nExample: propertyOfLivepropertyOfScoreboardinOut.');
+  assert.equal(groups[0].toolTip, 'Properties of "Theme" Global View Model.\nWhen targeted via Composition Scripting, all properties must use the "Theme" prefix.\nExample: "Themecolor1"');
+  assert.equal(groups[1].toolTip, 'Properties of "Main".\nWhen targeted via Composition Scripting, use each property\'s exact field ID.\nExample: "score"');
+  assert.equal(groups[3].toolTip, 'Properties of "propertyOfScoreboard" nested View Model within "Live" View Model.\nWhen targeted via Composition Scripting, all properties must use the "propertyOfLivepropertyOfScoreboard" prefix.\nExample: "propertyOfLivepropertyOfScoreboardinOut"');
   const fields = new Set(x.publications[0].fields.map(field => field.id));
   assert.equal(new Set(groups.map(group => group.id)).size, groups.length);
   for (const group of groups) {
     assert.ok(group.childIds.every(id => fields.has(id)));
-    assert.ok(group.toolTip.split('\n').every(line => line.endsWith('.')));
+    const lines = group.toolTip.split('\n');
+    assert.ok(lines.slice(0, -1).every(line => line.endsWith('.')));
+    assert.ok(lines.at(-1).startsWith('Example: "') && lines.at(-1).endsWith('"'));
   }
 });
 
@@ -156,9 +158,9 @@ test('font grouping: Main, nested and global font properties stay in their ownin
     {title: 'Fonts', fields: ['rivefontExample']},
     {title: 'Audio', fields: ['riveaudioTrack']},
   ]);
-  assert.equal(groups[0].toolTip, 'Properties of "Theme" Global View Model.\nWhen targeted via Composition Scripting, all properties must use the Theme prefix.\nExample: Themefont1.');
-  assert.equal(groups[1].toolTip, 'Properties of "Main".\nWhen targeted via Composition Scripting, use each property\'s exact field ID.\nExample: rivefontpropfont1.');
-  assert.equal(groups[2].toolTip, 'Properties of propertyOfLive nested View Model within Main View Model.\nWhen targeted via Composition Scripting, use each property\'s exact field ID.\nExample: rivefontproppropertyOfLivefont1.');
+  assert.equal(groups[0].toolTip, 'Properties of "Theme" Global View Model.\nWhen targeted via Composition Scripting, all properties must use the "Theme" prefix.\nExample: "Themefont1"');
+  assert.equal(groups[1].toolTip, 'Properties of "Main".\nWhen targeted via Composition Scripting, use each property\'s exact field ID.\nExample: "rivefontpropfont1"');
+  assert.equal(groups[2].toolTip, 'Properties of "propertyOfLive" nested View Model within "Main" View Model.\nWhen targeted via Composition Scripting, use each property\'s exact field ID.\nExample: "rivefontproppropertyOfLivefont1"');
   assert.equal(groups[3].toolTip, 'Font overrides for referenced text assets in the Rive file.');
   assert.equal(groups[4].toolTip, 'Audio overrides for referenced audio assets in the Rive file.');
 });
@@ -170,6 +172,6 @@ test('font grouping: a mixed nested group uses exact-ID guidance rather than adv
   const group = x.publications[0].groups[0];
   assert.deepEqual(plain(group.childIds), ['propertyOfLivetitle', 'rivefontproppropertyOfLivefont1']);
   assert.ok(group.toolTip.includes("use each property's exact field ID."));
-  assert.ok(!group.toolTip.includes('all properties must use the propertyOfLive prefix'));
-  assert.ok(group.toolTip.endsWith('Example: propertyOfLivetitle.'));
+  assert.ok(!group.toolTip.includes('all properties must use the "propertyOfLive" prefix'));
+  assert.ok(group.toolTip.endsWith('Example: "propertyOfLivetitle"'));
 });

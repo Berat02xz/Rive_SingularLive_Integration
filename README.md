@@ -78,12 +78,6 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 
 ---
 
-## Tests
-
-Run `npm test` from the repository root with Node.js 22 or 24. No installation or external services are needed. Run `npm run test:coverage` to check widget code coverage. GitHub Actions runs the suite on pushes and pull requests.
-
-See the [test coverage map and release checks](tests/README.md) for the behavior protected by each test file and the checks that still need Singular/RAV.
-
 ### 🧪 Note  
 This project is constantly evolving with ongoing bug fixes and improvements in collaboration with the Singular team.  
 

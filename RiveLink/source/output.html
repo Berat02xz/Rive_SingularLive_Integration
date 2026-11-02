@@ -1520,11 +1520,11 @@
 
     function buildPropertyGroupToolTip(description, fieldIds, prefix = "") {
       const example = fieldIds[0];
-      if (!example) return description;
+      if (!example) return description.replace(/\.$/, "");
       const scriptingHint = prefix && fieldIds.every(id => id.startsWith(prefix))
-        ? `When targeted via Composition Scripting, all properties must use the ${prefix} prefix.`
+        ? `When targeted via Composition Scripting, all properties must use the "${prefix}" prefix.`
         : "When targeted via Composition Scripting, use each property's exact field ID.";
-      return `${description}\n${scriptingHint}\nExample: ${example}.`;
+      return `${description}\n${scriptingHint}\nExample: "${example}"`;
     }
 
     function buildViewModelGroupToolTip(groupInfo, fieldIds) {
@@ -1534,7 +1534,7 @@
       const parentMetadata = widgetState.vmMetadata[parentPath];
       const parentName = (metadata && metadata.parentVMName) || (parentMetadata && parentMetadata.vmName) || widgetState.defaultVMName;
       const propertyName = groupInfo.parentProp || groupInfo.path.split("/").pop();
-      const description = `Properties of ${propertyName} nested View Model${parentName ? ` within ${parentName} View Model` : ""}.`;
+      const description = `Properties of "${propertyName}" nested View Model${parentName ? ` within "${parentName}" View Model` : ""}.`;
       return buildPropertyGroupToolTip(description, fieldIds, toAlphanumericId(groupInfo.path));
     }
 

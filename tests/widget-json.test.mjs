@@ -11,7 +11,7 @@ test('global color IDs use Model plus property in the UI, tooltip and runtime up
   x.sdk.setCustomWidgetUI = value => {ui = value;};
   x.api.generateUIModel();
   assert.equal(ui.fields.find(value => value.title === 'color1').id, 'Globalcolor1');
-  assert.ok(ui.groups.find(value => value.title === 'Global').toolTip.includes('Example: Globalcolor1.'));
+  assert.ok(ui.groups.find(value => value.title === 'Global').toolTip.includes('Example: "Globalcolor1"'));
   await x.api.onSingularValue({Globalcolor1: {r: 12, g: 34, b: 56, a: 1}, topicsPosX: '3.0'});
   assert.deepEqual(writes, [[12, 34, 56, 255]]);
   assert.equal(main.number('topicsPosX').value, 3);

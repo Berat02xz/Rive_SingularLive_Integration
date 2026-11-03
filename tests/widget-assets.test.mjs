@@ -72,9 +72,9 @@ test('fonts: latest selection wins even when the previous decode finishes later'
   x.api.fontBytesCache.set('First|400|auto', Promise.resolve(Uint8Array.of(1)));
   x.api.fontBytesCache.set('Second|400|auto', Promise.resolve(Uint8Array.of(2)));
   x.fontRuntime.decodeFont = bytes => bytes[0] === 1 ? first.promise : second.promise;
-  const a = x.api.onSingularValue({rivefontpropfont: {fontData: {family: 'First'}}});
+  const a = x.api.onSingularValue({font: {fontData: {family: 'First'}}});
   await flushAsync();
-  const b = x.api.onSingularValue({rivefontpropfont: {fontData: {family: 'Second'}}});
+  const b = x.api.onSingularValue({font: {fontData: {family: 'Second'}}});
   await flushAsync();
   const secondFont = {unref() {released.push('second');}};
   second.resolve(secondFont); await b;
@@ -91,11 +91,11 @@ test('fonts: a reload cannot receive a decoded font intended for the previous ac
   let released = 0;
   x.api.fontBytesCache.set('Example|400|auto', gate.promise);
   x.fontRuntime.decodeFont = async () => ({unref() {released++;}});
-  const apply = x.api.onSingularValue({rivefontpropfont: {family: 'Example'}});
-  x.api.widgetState.dataBoundFontProperties = {rivefontpropfont: {accessor: {value: 'new instance'}}};
+  const apply = x.api.onSingularValue({font: {family: 'Example'}});
+  x.api.widgetState.dataBoundFontProperties = {font: {accessor: {value: 'new instance'}}};
   gate.resolve(Uint8Array.of(1)); await apply;
   assert.equal(old.value, null);
-  assert.equal(x.api.widgetState.dataBoundFontProperties.rivefontpropfont.accessor.value, 'new instance');
+  assert.equal(x.api.widgetState.dataBoundFontProperties.font.accessor.value, 'new instance');
   assert.equal(released, 1);
 });
 
@@ -105,7 +105,7 @@ test('fonts: identical selections do not decode again or reload the animation', 
   x.api.widgetState.fileUrl = 'https://files.test/a.riv';
   x.api.fontBytesCache.set('Example|400|auto', Promise.resolve(Uint8Array.of(1)));
   x.fontRuntime.decodeFont = async () => {decodes++; return {unref() {}};};
-  const payload = {rivefontpropfont: {fontData: {family: 'Example', weight: 400}}};
+  const payload = {font: {fontData: {family: 'Example', weight: 400}}};
   await x.api.onSingularValue(payload); await x.api.onSingularValue(payload);
   assert.equal(decodes, 1);
   assert.equal(x.api.widgetState.r, x.runtime);
@@ -117,7 +117,7 @@ for (const failure of ['throw', 'null']) {
     const authored = {}, x = setupViewModels(model('Main', {font: field('font', authored)}));
     x.api.fontBytesCache.set('Example|400|auto', Promise.resolve(Uint8Array.of(1)));
     x.fontRuntime.decodeFont = async () => {if (failure === 'throw') throw Error('bad font'); return null;};
-    await x.api.onSingularValue({rivefontpropfont: {family: 'Example'}});
+    await x.api.onSingularValue({font: {family: 'Example'}});
     assert.equal(x.runtime.viewModelInstance.font('font').value, authored);
   });
 }
@@ -140,11 +140,11 @@ test('fonts: glyph fallback retains its wrapper until runtime teardown', async (
 
 test('fonts: failed asset assignment still releases the decoded wrapper', async () => {
   const x = setup(); let released = 0;
-  x.api.widgetState.referencedFontAssets.rivefontExample = {asset: {setFont() {throw Error('asset disposed');}}};
-  x.api.widgetState.metricFontData.rivefontExample = {family: 'Example'};
+  x.api.widgetState.referencedFontAssets.ExampleRegular = {asset: {setFont() {throw Error('asset disposed');}}};
+  x.api.widgetState.metricFontData.ExampleRegular = {family: 'Example'};
   x.api.fontBytesCache.set('Example|400|auto', Promise.resolve(Uint8Array.of(1)));
   x.fontRuntime.decodeFont = async () => ({unref() {released++;}});
-  await x.api.fetchAndApplyFont('rivefontExample');
+  await x.api.fetchAndApplyFont('ExampleRegular');
   assert.equal(released, 1);
 });
 
@@ -172,10 +172,10 @@ test('audio: prefetched audio is reused for applies and released once during tea
   const decoded = {unref() {released++;}};
   x.context.fetch = async url => {assert.equal(url, 'https://media.test/a.mp3'); requests++; return bytesResponse();};
   x.fontRuntime.decodeAudio = async () => {decodes++; return decoded;};
-  x.api.widgetState.audioAssetUrls = {riveaudioMusic: '//media.test/a.mp3'};
-  x.api.widgetState.referencedAudioAssets = {riveaudioMusic: {asset: {setAudioSource: value => applied.push(value)}}};
+  x.api.widgetState.audioAssetUrls = {Music: '//media.test/a.mp3'};
+  x.api.widgetState.referencedAudioAssets = {Music: {asset: {setAudioSource: value => applied.push(value)}}};
   await x.api.prefetchAudioAssets(); await x.api.prefetchAudioAssets();
-  await x.api.fetchAndApplyAudio('riveaudioMusic');
+  await x.api.fetchAndApplyAudio('Music');
   assert.deepEqual(applied, [decoded]);
   assert.equal(requests, 1); assert.equal(decodes, 1); assert.equal(released, 0);
   x.api.releaseDecodedAudioCache(); x.api.releaseDecodedAudioCache();
@@ -185,31 +185,31 @@ test('audio: prefetched audio is reused for applies and released once during tea
 for (const failure of ['http', 'fetch', 'decode', 'null']) {
   test(`audio: ${failure} failure keeps the authored source and permits retry`, async () => {
     const x = setup(), applied = [];
-    x.api.widgetState.audioAssetUrls = {riveaudioMusic: 'media.test/a.mp3'};
-    x.api.widgetState.referencedAudioAssets = {riveaudioMusic: {asset: {setAudioSource: value => applied.push(value)}}};
+    x.api.widgetState.audioAssetUrls = {Music: 'media.test/a.mp3'};
+    x.api.widgetState.referencedAudioAssets = {Music: {asset: {setAudioSource: value => applied.push(value)}}};
     x.context.fetch = async () => {if (failure === 'fetch') throw Error('offline'); return failure === 'http' ? {ok: false} : bytesResponse();};
     x.fontRuntime.decodeAudio = async () => {if (failure === 'decode') throw Error('bad audio'); return null;};
-    await x.api.fetchAndApplyAudio('riveaudioMusic');
+    await x.api.fetchAndApplyAudio('Music');
     assert.equal(applied.length, 0); assert.equal(Object.keys(x.api.audioDecodedCache).length, 0);
     x.context.fetch = async () => bytesResponse();
     const decoded = {unref() {}};
     x.fontRuntime.decodeAudio = async () => decoded;
-    await x.api.fetchAndApplyAudio('riveaudioMusic');
+    await x.api.fetchAndApplyAudio('Music');
     assert.deepEqual(applied, [decoded]);
   });
 }
 
 test('audio: a replaced asset cannot receive a late decode', async () => {
   const x = setup(), gate = deferred(), applied = [];
-  x.api.widgetState.audioAssetUrls = {riveaudioMusic: 'https://media.test/a.mp3'};
-  x.api.widgetState.referencedAudioAssets = {riveaudioMusic: {asset: {setAudioSource: () => applied.push('old')}}};
+  x.api.widgetState.audioAssetUrls = {Music: 'https://media.test/a.mp3'};
+  x.api.widgetState.referencedAudioAssets = {Music: {asset: {setAudioSource: () => applied.push('old')}}};
   x.context.fetch = async () => bytesResponse();
   x.fontRuntime.decodeAudio = () => gate.promise;
-  const pending = x.api.fetchAndApplyAudio('riveaudioMusic');
+  const pending = x.api.fetchAndApplyAudio('Music');
   await flushAsync();
-  x.api.widgetState.referencedAudioAssets.riveaudioMusic.asset = {setAudioSource: () => applied.push('new')};
+  x.api.widgetState.referencedAudioAssets.Music.asset = {setAudioSource: () => applied.push('new')};
   gate.resolve({unref() {}}); await pending;
-  assert.deepEqual(applied, []); assert.equal(x.warnings.length, 1);
+  assert.deepEqual(applied, []); assert.equal(x.warnings.length, 0);
 });
 
 for (const [kind, value] of [
@@ -219,9 +219,10 @@ for (const [kind, value] of [
 ]) {
   test(`audio: Singular ${kind} payload is routed without leaking into property updates`, async () => {
     const x = setup(); x.api.widgetState.riveReady = true;
-    await x.api.onSingularValue({riveaudioMusic: value});
-    assert.equal(x.api.widgetState.audioAssetUrls.riveaudioMusic, value ? 'https://media.test/a.mp3' : '');
-    assert.equal(x.api.widgetState.pendingInitialValues.riveaudioMusic, undefined);
+    x.api.widgetState.referencedAudioAssets.Music = {asset: {}};
+    await x.api.onSingularValue({Music: value});
+    assert.equal(x.api.widgetState.audioAssetUrls.Music, value ? 'https://media.test/a.mp3' : '');
+    assert.equal(x.api.widgetState.pendingInitialValues.Music, undefined);
   });
 }
 

@@ -19,7 +19,7 @@ for (const [kind, property, expectedType, expectedDefault] of cases) {
     const x = setupViewModels(model('Main', {value: property}));
     x.api.generateUIModel();
     const control = x.publications[0].fields[0];
-    assert.equal(control.id, kind === 'font' ? 'rivefontpropvalue' : 'value');
+    assert.equal(control.id, 'value');
     assert.equal(control.type, expectedType); assert.deepEqual(plain(control.defaultValue), expectedDefault);
     if (kind === 'number') assert.equal(control.step, '0.1');
     if (kind.startsWith('enum')) assert.deepEqual(plain(control.selections), [{id: '0', title: 'Clock'}, {id: '1', title: 'Timer'}]);
@@ -55,17 +55,17 @@ test('controls: artboard property choices exclude the current artboard and retai
   assert.deepEqual(released, [0, 1, 2, 'default']);
 });
 
-test('controls: referenced asset IDs, saved values and types remain compatible', () => {
+test('controls: referenced assets use plain names and retain saved values and types', () => {
   const x = setupViewModels(model('Main', {}), {}, {
-    referencedFontAssets: {rivefontExampleFamily: {fieldId: 'rivefontExampleFamily', assetName: 'ExampleFamily-Regular.ttf'}},
-    referencedAudioAssets: {riveaudioIntroSound: {fieldId: 'riveaudioIntroSound', assetName: 'Intro Sound.wav'}},
-    metricFontData: {rivefontExampleFamily: {family: 'Override', weight: '700', subset: 'latin'}},
-    audioAssetUrls: {riveaudioIntroSound: 'https://media.test/intro.wav'},
+    referencedFontAssets: {ExampleFamilyRegular: {fieldId: 'ExampleFamilyRegular', assetName: 'ExampleFamily-Regular.ttf'}},
+    referencedAudioAssets: {IntroSound: {fieldId: 'IntroSound', assetName: 'Intro Sound.wav'}},
+    metricFontData: {ExampleFamilyRegular: {family: 'Override', weight: '700', subset: 'latin'}},
+    audioAssetUrls: {IntroSound: 'https://media.test/intro.wav'},
   });
   x.api.generateUIModel(); const ui = x.publications[0];
   assert.deepEqual(plain(ui.fields), [
-    {id: 'rivefontExampleFamily', type: 'metricfont', title: 'ExampleFamily-Regular', defaultValue: {fontData: {family: 'Override', weight: '700', subset: 'latin'}}},
-    {id: 'riveaudioIntroSound', type: 'audio', title: 'Intro Sound', defaultValue: 'https://media.test/intro.wav'},
+    {id: 'ExampleFamilyRegular', type: 'metricfont', title: 'ExampleFamily-Regular', defaultValue: {fontData: {family: 'Override', weight: '700', subset: 'latin'}}},
+    {id: 'IntroSound', type: 'audio', title: 'Intro Sound', defaultValue: 'https://media.test/intro.wav'},
   ]);
   assert.deepEqual(plain(ui.groups.map(group => group.title)), ['Fonts', 'Audio']);
   assert.ok(ui.groups.every(group => !group.toolTip.includes('Composition Scripting')));
@@ -146,32 +146,88 @@ test('font grouping: Main, nested and global font properties stay in their ownin
   const child = model('Live', {font1: field('font', null)});
   const main = model('Main', {font1: field('font', null), propertyOfLive: {type: 'viewModel', instance: child}});
   const x = setupViewModels(main, {Theme: model('Theme', {font1: field('font', null)})}, {
-    referencedFontAssets: {rivefontExample: {fieldId: 'rivefontExample', assetName: 'Example-Regular.ttf'}},
-    referencedAudioAssets: {riveaudioTrack: {fieldId: 'riveaudioTrack', assetName: 'Track.wav'}},
+    referencedFontAssets: {ExampleRegular: {fieldId: 'ExampleRegular', assetName: 'Example-Regular.ttf'}},
+    referencedAudioAssets: {Track: {fieldId: 'Track', assetName: 'Track.wav'}},
   });
   x.api.generateUIModel();
   const groups = x.publications[0].groups;
   assert.deepEqual(plain(groups.map(group => ({title: group.title, fields: group.childIds}))), [
     {title: 'Theme', fields: ['Themefont1']},
-    {title: 'Main', fields: ['rivefontpropfont1']},
-    {title: 'propertyOfLive : Live', fields: ['rivefontproppropertyOfLivefont1']},
-    {title: 'Fonts', fields: ['rivefontExample']},
-    {title: 'Audio', fields: ['riveaudioTrack']},
+    {title: 'Main', fields: ['font1']},
+    {title: 'propertyOfLive : Live', fields: ['propertyOfLivefont1']},
+    {title: 'Fonts', fields: ['ExampleRegular']},
+    {title: 'Audio', fields: ['Track']},
   ]);
   assert.equal(groups[0].toolTip, 'Properties of "Theme" Global View Model.\nWhen targeted via Composition Scripting, all properties must use the "Theme" prefix.\nExample: "Themefont1"');
-  assert.equal(groups[1].toolTip, 'Properties of "Main".\nWhen targeted via Composition Scripting, use each property\'s exact field ID.\nExample: "rivefontpropfont1"');
-  assert.equal(groups[2].toolTip, 'Properties of "propertyOfLive" nested View Model within "Main" View Model.\nWhen targeted via Composition Scripting, use each property\'s exact field ID.\nExample: "rivefontproppropertyOfLivefont1"');
+  assert.equal(groups[1].toolTip, 'Properties of "Main".\nWhen targeted via Composition Scripting, use each property\'s exact field ID.\nExample: "font1"');
+  assert.equal(groups[2].toolTip, 'Properties of "propertyOfLive" nested View Model within "Main" View Model.\nWhen targeted via Composition Scripting, all properties must use the "propertyOfLive" prefix.\nExample: "propertyOfLivefont1"');
   assert.equal(groups[3].toolTip, 'Font overrides for referenced text assets in the Rive file.');
   assert.equal(groups[4].toolTip, 'Audio overrides for referenced audio assets in the Rive file.');
 });
 
-test('font grouping: a mixed nested group uses exact-ID guidance rather than advertising an incorrect shared prefix', () => {
+test('font grouping: fonts and other nested properties share the property path prefix', () => {
   const child = model('Live', {title: field('string', ''), font1: field('font', null)});
   const x = setupViewModels(model('Main', {propertyOfLive: {type: 'viewModel', instance: child}}));
   x.api.generateUIModel();
   const group = x.publications[0].groups[0];
-  assert.deepEqual(plain(group.childIds), ['propertyOfLivetitle', 'rivefontproppropertyOfLivefont1']);
-  assert.ok(group.toolTip.includes("use each property's exact field ID."));
-  assert.ok(!group.toolTip.includes('all properties must use the "propertyOfLive" prefix'));
+  assert.deepEqual(plain(group.childIds), ['propertyOfLivetitle', 'propertyOfLivefont1']);
+  assert.ok(group.toolTip.includes('all properties must use the "propertyOfLive" prefix'));
   assert.ok(group.toolTip.endsWith('Example: "propertyOfLivetitle"'));
+});
+
+test('property catalog logs exact published IDs and types after UI generation, including nested/global fonts and assets', () => {
+  const nested = model('Live', {titleFont: field('font', null)});
+  const main = model('Main', {score: field('number', 1), titleFont: field('font', null),
+    propertyOfLive: {type: 'viewModel', instance: nested}, private__: field('number', 99)});
+  const x = setupViewModels(main, {Theme: model('Theme', {titleFont: field('font', null)})}, {
+    referencedFontAssets: {InterRegular: {fieldId: 'InterRegular', assetName: 'Inter-Regular.ttf'}},
+    referencedAudioAssets: {IntroSound: {fieldId: 'IntroSound', assetName: 'Intro Sound.wav'}},
+  });
+  const originalTable = x.context.console.table;
+  x.context.console.table = (...args) => {
+    assert.equal(x.publications.length, 1, 'The dynamic UI must be published before the catalog');
+    originalTable(...args);
+  };
+  x.api.generateUIModel();
+  assert.deepEqual(x.consoleOutput.map(entry => entry.method), ['groupCollapsed', 'table', 'groupEnd']);
+  const rows = plain(x.consoleOutput[1].args[0]);
+  const config = JSON.parse(fs.readFileSync(new URL('../RiveLink/source/widget_ui_config.json', import.meta.url), 'utf8')).model;
+  assert.deepEqual(rows.map(row => row['Field ID']), [...config.fields, ...plain(x.publications[0].fields)].map(field => field.id));
+  assert.deepEqual(rows.find(row => row['Field ID'] === 'propertyOfLivetitleFont'), {
+    'Field ID': 'propertyOfLivetitleFont', 'Rive type': 'font', 'Singular control': 'metricfont',
+    Scope: 'Nested', 'View Model': 'Main', 'Property / asset': 'propertyOfLive/titleFont',
+  });
+  assert.equal(rows.find(row => row['Field ID'] === 'ThemetitleFont').Scope, 'Global');
+  assert.equal(rows.find(row => row['Field ID'] === 'ThemetitleFont')['View Model'], 'Theme');
+  assert.equal(rows.find(row => row['Field ID'] === 'InterRegular')['Property / asset'], 'Inter-Regular.ttf');
+  assert.equal(rows.find(row => row['Field ID'] === 'IntroSound')['Rive type'], 'audio');
+  assert.ok(!rows.some(row => row['Property / asset'].includes('private')));
+});
+
+test('property catalog stays quiet for unchanged inventories and value updates, then refreshes for context or asset changes', async () => {
+  const x = setupViewModels(model('Main', {score: field('number', 1)}));
+  x.api.widgetState.artboardName = 'Main';
+  x.api.generateUIModel();
+  await x.callbacks.onValue({score: '12.5'});
+  x.api.generateUIModel();
+  assert.equal(x.consoleOutput.filter(entry => entry.method === 'table').length, 1);
+  x.api.widgetState.referencedAudioAssets.Track = {fieldId: 'Track', assetName: 'Track.wav'};
+  x.api.generateUIModel();
+  assert.equal(x.consoleOutput.filter(entry => entry.method === 'table').length, 2);
+  x.api.widgetState.artboardName = 'Second';
+  x.api.generateUIModel();
+  assert.equal(x.consoleOutput.filter(entry => entry.method === 'table').length, 3);
+  assert.ok(x.consoleOutput.filter(entry => entry.method === 'groupCollapsed').at(-1).args[0].includes('Second'));
+});
+
+test('property catalog handles an empty dynamic UI and consoles without table/group support', () => {
+  const x = setupViewModels(model('Main', {}));
+  delete x.context.console.table;
+  delete x.context.console.groupCollapsed;
+  delete x.context.console.groupEnd;
+  x.api.generateUIModel();
+  assert.equal(x.publications.length, 1);
+  const rows = plain(x.consoleOutput.find(entry => entry.method === 'log').args[1]);
+  assert.equal(rows.length, 4);
+  assert.ok(rows.every(row => row.Scope === 'Widget'));
 });

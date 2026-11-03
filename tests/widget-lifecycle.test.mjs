@@ -99,26 +99,99 @@ test('asset loader: embedded and CDN assets remain owned by Rive, and unknown as
   assert.equal(Object.keys(x.api.widgetState.referencedAudioAssets).length, 0);
 });
 
-test('asset loader: referenced font IDs remain compatible and decoded fonts are applied without reload', async () => {
+test('asset loader: referenced fonts use plain asset names and apply decoded fonts without reload', async () => {
   const x = start(), fonts = [];
-  x.api.widgetState.metricFontData.rivefontExampleRegular = {family: 'Example'};
+  x.api.widgetState.metricFontData.ExampleRegular = {family: 'Example'};
   x.api.fontBytesCache.set('Example|400|auto', Promise.resolve(Uint8Array.of(1)));
   let released = 0; const font = {unref() {released++;}};
   x.fontRuntime.decodeFont = async () => font;
   const asset = {isFont: true, name: 'Example-Regular.ttf', setFont(value) {fonts.push(value);}};
   assert.equal(x.instances[0].config.assetLoader(asset, []), true);
   await flushAsync();
-  assert.equal(x.api.widgetState.referencedFontAssets.rivefontExampleRegular.asset, asset);
+  assert.equal(x.api.widgetState.referencedFontAssets.ExampleRegular.asset, asset);
   assert.deepEqual(fonts, [font]); assert.equal(released, 1); assert.equal(x.instances.length, 1);
+});
+
+test('startup: plain font and audio values received before discovery replay and settle after loading', async () => {
+  const x = start(), fonts = [], audio = [], decodedFont = {unref() {}}, decodedAudio = {unref() {}};
+  x.fontRuntime.decodeFont = async () => decodedFont;
+  x.fontRuntime.decodeAudio = async () => decodedAudio;
+  x.api.fontBytesCache.set('Example|400|auto', Promise.resolve(Uint8Array.of(1)));
+  x.context.fetch = async () => bytesResponse();
+  await x.callbacks.onValue({ExampleRegular: {fontData: {family: 'Example'}}, Music: 'https://media.test/a.wav'});
+  const register = instance => {
+    instance.config.assetLoader({isFont: true, name: 'Example-Regular.ttf', setFont(value) {fonts.push(value);}}, []);
+    instance.config.assetLoader({isAudio: true, name: 'Music.wav', setAudioSource(value) {audio.push(value);}}, []);
+  };
+  register(x.instances[0]); x.instances[0].config.onLoad();
+  x.runTimers(0); await flushAsync();
+  assert.equal(x.instances.length, 2);
+  register(x.instances[1]);
+  assert.deepEqual(audio, [decodedAudio]); // Cached audio is assigned synchronously on reload.
+  x.instances[1].config.onLoad(); x.runTimers(0); await flushAsync();
+  assert.equal(fonts.at(-1), decodedFont);
+  await x.callbacks.onValue({ExampleRegular: {fontData: {family: 'Example'}}, Music: 'https://media.test/a.wav'});
+  assert.equal(x.instances.length, 2);
+});
+
+test('late assets: pending plain font/audio values replay outside assetLoader', async () => {
+  const x = start(), applied = [], decoded = {unref() {}};
+  x.instances[0].config.onLoad();
+  x.fontRuntime.decodeFont = async () => decoded;
+  x.fontRuntime.decodeAudio = async () => decoded;
+  x.api.fontBytesCache.set('Example|400|auto', Promise.resolve(Uint8Array.of(1)));
+  x.context.fetch = async () => bytesResponse();
+  await x.callbacks.onValue({ExampleRegular: {family: 'Example'}, Music: 'https://media.test/a.wav'});
+  const loader = x.instances[0].config.assetLoader;
+  loader({isFont: true, name: 'Example-Regular.ttf', setFont(value) {applied.push(value);}}, []);
+  assert.deepEqual(applied, []);
+  x.runTimers(0); await flushAsync();
+  assert.deepEqual(applied, [decoded]);
+  loader({isAudio: true, name: 'Music.wav', setAudioSource() {}}, []);
+  assert.equal(x.instances[0].cleanups, 0);
+  x.runTimers(0); await flushAsync();
+  assert.equal(x.instances[0].cleanups, 1);
+  assert.equal(x.instances.length, 2);
+});
+
+test('asset collisions are reported without replacing another asset or published property', () => {
+  const root = model('Main', {Published: field('string', 'authored')}), x = start({root});
+  const loader = x.instances[0].config.assetLoader;
+  assert.equal(loader({isFont: true, name: 'Shared.ttf'}, []), true);
+  assert.equal(loader({isAudio: true, name: 'Shared.wav'}, []), false);
+  assert.equal(loader({isFont: true, name: 'S-hared.ttf'}, []), false);
+  assert.equal(loader({isFont: true, name: 'riveartboard.ttf'}, []), false);
+  assert.equal(loader({isFont: true, name: '!!!.ttf'}, []), false);
+  x.instances[0].config.onLoad();
+  assert.equal(loader({isFont: true, name: 'Published.ttf'}, []), false);
+  assert.equal(x.api.widgetState.referencedFontAssets.Shared.assetName, 'Shared.ttf');
+  assert.equal(x.errors.length, 5);
+  const ids = x.publications[0].fields.map(field => field.id);
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+test('plain asset names matching Object properties are registered and routed normally', async () => {
+  const x = start(), applied = [], decoded = {unref() {}};
+  x.instances[0].config.assetLoader({isFont: true, name: 'constructor.ttf', setFont(value) {applied.push(value);}}, []);
+  x.instances[0].config.assetLoader({isAudio: true, name: 'toString.wav', setAudioSource() {}}, []);
+  x.instances[0].config.onLoad();
+  x.api.fontBytesCache.set('Example|400|auto', Promise.resolve(Uint8Array.of(1)));
+  x.fontRuntime.decodeFont = async () => decoded;
+  await x.callbacks.onValue({constructor: {family: 'Example'}});
+  assert.deepEqual(applied, [decoded]);
+  const fields = x.publications[0].fields;
+  assert.equal(fields.find(field => field.id === 'constructor').defaultValue.fontData.family, 'constructor');
+  assert.equal(fields.find(field => field.id === 'toString').defaultValue, '');
+  assert.equal(x.errors.length, 0);
 });
 
 test('asset loader: cached audio is set synchronously before artboard initialization', () => {
   const x = start(), applied = [], decoded = {unref() {assert.fail('cache must retain the wrapper');}};
-  x.api.widgetState.audioAssetUrls.riveaudioIntroSound = '//media.test/a.wav';
+  x.api.widgetState.audioAssetUrls.IntroSound = '//media.test/a.wav';
   x.api.audioDecodedCache['https://media.test/a.wav'] = decoded;
   assert.equal(x.instances[0].config.assetLoader({isAudio: true, name: 'Intro Sound.wav', setAudioSource(value) {applied.push(value);}}, []), true);
   assert.deepEqual(applied, [decoded]);
-  assert.equal(x.api.widgetState.referencedAudioAssets.riveaudioIntroSound.fieldId, 'riveaudioIntroSound');
+  assert.equal(x.api.widgetState.referencedAudioAssets.IntroSound.fieldId, 'IntroSound');
 });
 
 test('audio startup: a URL change decodes before reloading, then repeated values do not reload again', async () => {
@@ -128,7 +201,7 @@ test('audio startup: a URL change decodes before reloading, then repeated values
   x.context.fetch = () => gate.promise;
   let decodes = 0;
   x.fontRuntime.decodeAudio = async () => {decodes++; return decoded;};
-  await x.callbacks.onValue({riveaudioMusic: 'https://media.test/music.wav'});
+  await x.callbacks.onValue({Music: 'https://media.test/music.wav'});
   assert.equal(x.instances.length, 1); assert.equal(x.instances[0].cleanups, 1);
   gate.resolve(bytesResponse()); await flushAsync();
   assert.equal(x.instances.length, 2); assert.equal(decodes, 1);
@@ -136,14 +209,14 @@ test('audio startup: a URL change decodes before reloading, then repeated values
   x.instances[1].config.assetLoader({isAudio: true, name: 'Music.wav', setAudioSource(value) {applied.push(value);}}, []);
   assert.deepEqual(applied, [decoded]);
   x.instances[1].config.onLoad(); x.runTimers(0); await flushAsync();
-  await x.callbacks.onValue({riveaudioMusic: 'https://media.test/music.wav'});
+  await x.callbacks.onValue({Music: 'https://media.test/music.wav'});
   assert.equal(x.instances.length, 2); assert.equal(decodes, 1);
 });
 
 test('late assets: repeated audio registration coalesces UI refreshes and preserves current values', () => {
   const x = start(); x.instances[0].config.onLoad();
   const loader = x.instances[0].config.assetLoader;
-  x.api.widgetState.audioAssetUrls.riveaudioA = 'https://media.test/a.wav';
+  x.api.widgetState.audioAssetUrls.A = 'https://media.test/a.wav';
   // A cached source keeps this test entirely synchronous.
   x.api.audioDecodedCache['https://media.test/a.wav'] = {};
   loader({isAudio: true, name: 'A.wav', setAudioSource() {}}, []);
@@ -152,13 +225,13 @@ test('late assets: repeated audio registration coalesces UI refreshes and preser
   x.runTimers(100);
   assert.equal(x.publications.length, 2);
   const fields = x.publications[1].fields;
-  assert.equal(fields.find(field => field.id === 'riveaudioA').defaultValue, 'https://media.test/a.wav');
-  assert.equal(fields.find(field => field.id === 'riveaudioB').defaultValue, '');
+  assert.equal(fields.find(field => field.id === 'A').defaultValue, 'https://media.test/a.wav');
+  assert.equal(fields.find(field => field.id === 'B').defaultValue, '');
 });
 
 test('reload races: only the newest file is initialized when old audio prefetch finishes late', async () => {
   const x = start(), first = deferred(), second = deferred(); let requests = 0;
-  x.api.widgetState.audioAssetUrls.riveaudioMusic = 'https://media.test/music.wav';
+  x.api.widgetState.audioAssetUrls.Music = 'https://media.test/music.wav';
   x.context.fetch = () => ++requests === 1 ? first.promise : second.promise;
   x.fontRuntime.decodeAudio = async () => ({unref() {}});
   x.api.reloadRive('https://files.test/old.riv');

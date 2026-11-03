@@ -47,6 +47,62 @@ test('global fonts with Model plus property IDs still decode and update their bo
   assert.equal(released, 1);
 });
 
+test('fonts use ordinary root, nested and global paths and update each accessor independently', async () => {
+  const child = model('Live', {titleFont: field('font', null)});
+  const globalChild = model('Styles', {titleFont: field('font', null)});
+  const main = model('Main', {titleFont: field('font', null), propertyOfLive: {type: 'viewModel', instance: child}});
+  const theme = model('Theme', {titleFont: field('font', null), styles: {type: 'viewModel', instance: globalChild}});
+  const x = setupViewModels(main, {Theme: theme});
+  x.api.generateUIModel();
+  assert.deepEqual(Array.from(x.publications[0].fields, field => field.id).sort(),
+    ['ThemetitleFont', 'ThemestylestitleFont', 'titleFont', 'propertyOfLivetitleFont'].sort());
+  const bindings = [
+    ['titleFont', main.font('titleFont')], ['propertyOfLivetitleFont', child.font('titleFont')],
+    ['ThemetitleFont', theme.font('titleFont')], ['ThemestylestitleFont', globalChild.font('titleFont')],
+  ];
+  const decoded = bindings.map((_, id) => ({id, unref() {}}));
+  x.fontRuntime.decodeFont = async bytes => decoded[bytes[0]];
+  for (const [index, [id, accessor]] of bindings.entries()) {
+    const family = `Font ${index}`;
+    x.api.fontBytesCache.set(`${family}|400|auto`, Promise.resolve(Uint8Array.of(index)));
+    await x.callbacks.onValue({[id]: {fontData: {family}}});
+    assert.equal(accessor.value, decoded[index]);
+    assert.equal(x.api.widgetState.pendingInitialValues[id], undefined);
+    bindings.slice(index + 1).forEach(([, untouched]) => assert.equal(untouched.value, null));
+  }
+});
+
+test('ordinary family objects and URL strings are not classified as unregistered font/audio controls', async () => {
+  const x = setupViewModels(model('Main', {title: field('string', '')}));
+  await x.callbacks.onValue({title: 'https://media.test/title', unknown: {family: 'Unregistered'}});
+  assert.equal(x.runtime.viewModelInstance.string('title').value, 'https://media.test/title');
+  assert.deepEqual(Object.keys(x.api.widgetState.metricFontData), []);
+  assert.deepEqual(Object.keys(x.api.widgetState.audioAssetUrls), []);
+  assert.ok(x.api.widgetState.pendingInitialValues.unknown);
+});
+
+test('properties colliding with plain asset names receive separate IDs and updates', async () => {
+  const main = model('Main', {Inter: field('font', null), Music: field('string', 'authored')});
+  const applied = [];
+  const x = setupViewModels(main, {}, {
+    referencedFontAssets: {Inter: {fieldId: 'Inter', assetName: 'Inter.ttf', asset: {setFont(value) {applied.push(value);}}}},
+    referencedAudioAssets: {Music: {fieldId: 'Music', assetName: 'Music.wav', asset: {}}},
+  });
+  const fontId = x.discovered.props.Inter.fieldId, titleId = x.discovered.props.Music.fieldId;
+  assert.notEqual(fontId, 'Inter'); assert.notEqual(titleId, 'Music');
+  x.api.generateUIModel();
+  const ids = x.publications[0].fields.map(field => field.id);
+  assert.equal(new Set(ids).size, ids.length);
+  const decoded = {unref() {}};
+  x.fontRuntime.decodeFont = async () => decoded;
+  x.api.fontBytesCache.set('Test|400|auto', Promise.resolve(Uint8Array.of(1)));
+  await x.callbacks.onValue({[fontId]: {family: 'Test'}, [titleId]: 'updated'});
+  assert.equal(main.font('Inter').value, decoded);
+  assert.equal(main.string('Music').value, 'updated');
+  assert.deepEqual(applied, []);
+  assert.equal(x.api.widgetState.audioAssetUrls.Music, undefined);
+});
+
 test('global font values received before discovery are applied after binding', async () => {
   const global = model('Global', {font: field('font', null)});
   const x = setupViewModels(model('Main', {}), {Global: global});
@@ -98,45 +154,47 @@ test('prefixed global values survive startup before their property metadata is a
   assert.equal(rows.instanceAt(0).number('score').value, 12.5);
 });
 
-test('referenced fonts, normal bound fonts and audio controls keep their existing routing', async () => {
+test('referenced fonts, bound fonts and audio controls route by metadata without type prefixes', async () => {
   const fonts = [];
   const main = model('Main', {titleFont: field('font', null)});
   const x = setupViewModels(main, {}, {
-    referencedFontAssets: {rivefontInter: {fieldId: 'rivefontInter', asset: {setFont(value) {fonts.push(value);}}}},
-    referencedAudioAssets: {riveaudioMusic: {fieldId: 'riveaudioMusic', asset: {}}},
+    referencedFontAssets: {Inter: {fieldId: 'Inter', asset: {setFont(value) {fonts.push(value);}}}},
+    referencedAudioAssets: {Music: {fieldId: 'Music', asset: {}}},
   });
   let decoded = 0, released = 0;
   x.fontRuntime.decodeFont = async () => ({id: ++decoded, unref() {released++;}});
   x.api.fontBytesCache.set('Test Font|400|auto', Promise.resolve(new Uint8Array([1])));
   await x.api.onSingularValue({
-    rivefontInter: {fontData: {family: 'Test Font'}},
-    rivefontproptitleFont: {fontData: {family: 'Test Font'}},
-    riveaudioMusic: {url: 'https://example.com/music.mp3'},
+    Inter: {fontData: {family: 'Test Font'}},
+    titleFont: {fontData: {family: 'Test Font'}},
+    Music: {url: 'https://example.com/music.mp3'},
   });
   assert.equal(fonts.length, 1);
   assert.ok(main.font('titleFont').value);
   assert.equal(decoded, 2);
   assert.equal(released, 2);
-  assert.equal(x.api.widgetState.audioAssetUrls.riveaudioMusic, 'https://example.com/music.mp3');
-  assert.equal(x.api.widgetState.pendingInitialValues.rivefontInter, undefined);
-  assert.equal(x.api.widgetState.pendingInitialValues.rivefontproptitleFont, undefined);
-  assert.equal(x.api.widgetState.pendingInitialValues.riveaudioMusic, undefined);
+  assert.equal(x.api.widgetState.audioAssetUrls.Music, 'https://example.com/music.mp3');
+  assert.equal(x.api.widgetState.pendingInitialValues.Inter, undefined);
+  assert.equal(x.api.widgetState.pendingInitialValues.titleFont, undefined);
+  assert.equal(x.api.widgetState.pendingInitialValues.Music, undefined);
 });
 
-test('font and audio startup data remain cached until asset discovery', async () => {
+test('font and audio startup data remain pending until asset discovery', async () => {
   const x = setupViewModels(model('Main', {}), {});
   x.api.widgetState.riveReady = false;
-  await x.api.onSingularValue({rivefontInter: {fontData: {family: 'Test Font'}}, riveaudioMusic: 'https://example.com/music.mp3'});
-  assert.equal(x.api.widgetState.metricFontData.rivefontInter.family, 'Test Font');
-  assert.equal(x.api.widgetState.audioAssetUrls.riveaudioMusic, 'https://example.com/music.mp3');
-  assert.ok(x.api.widgetState.pendingInitialValues.rivefontInter);
-  assert.ok(x.api.widgetState.pendingInitialValues.riveaudioMusic);
-  x.api.widgetState.referencedFontAssets.rivefontInter = {asset: {}};
-  x.api.widgetState.referencedAudioAssets.riveaudioMusic = {asset: {}};
+  await x.api.onSingularValue({Inter: {fontData: {family: 'Test Font'}}, Music: 'https://example.com/music.mp3'});
+  assert.equal(x.api.widgetState.metricFontData.Inter, undefined);
+  assert.equal(x.api.widgetState.audioAssetUrls.Music, undefined);
+  assert.ok(x.api.widgetState.pendingInitialValues.Inter);
+  assert.ok(x.api.widgetState.pendingInitialValues.Music);
+  x.api.widgetState.referencedFontAssets.Inter = {asset: {}};
+  x.api.widgetState.referencedAudioAssets.Music = {asset: {}};
   x.api.widgetState.riveReady = true;
   await x.api.onSingularValue({...x.api.widgetState.pendingInitialValues});
-  assert.equal(x.api.widgetState.pendingInitialValues.rivefontInter, undefined);
-  assert.equal(x.api.widgetState.pendingInitialValues.riveaudioMusic, undefined);
+  assert.equal(x.api.widgetState.metricFontData.Inter.family, 'Test Font');
+  assert.equal(x.api.widgetState.audioAssetUrls.Music, 'https://example.com/music.mp3');
+  assert.equal(x.api.widgetState.pendingInitialValues.Inter, undefined);
+  assert.equal(x.api.widgetState.pendingInitialValues.Music, undefined);
 });
 
 test('a global ID collision preserves the existing Main control and reports the omitted global', () => {
@@ -167,12 +225,12 @@ test('ambiguous Model plus property names and sanitized names are reported witho
 test('global IDs cannot replace configuration or referenced asset controls', () => {
   const globals = {
     rive: model('rive', {artboard: field('number', 0)}),
-    rivefont: model('rivefont', {Inter: field('number', 0)}),
-    riveaudio: model('riveaudio', {Music: field('number', 0)}),
+    I: model('I', {nter: field('number', 0)}),
+    M: model('M', {usic: field('number', 0)}),
   };
   const x = setupViewModels(model('Main', {}), globals, {
-    referencedFontAssets: {font: {fieldId: 'rivefontInter'}},
-    referencedAudioAssets: {audio: {fieldId: 'riveaudioMusic'}},
+    referencedFontAssets: {font: {fieldId: 'Inter'}},
+    referencedAudioAssets: {audio: {fieldId: 'Music'}},
   });
   assert.equal(Object.keys(x.discovered.props).length, 0);
   assert.equal(x.errors.length, 3);
@@ -359,9 +417,10 @@ test('numeric normalization does not restore consumed font keys to pending initi
   x.api.widgetState.riveReady = true;
   const score = field('number', 5);
   x.api.widgetState.riveProps = {score: {type: 'number', accessor: score.accessor}};
-  await x.api.onSingularValue({score: '25', rivefontExample: {fontData: {family: 'Inter', weight: '400'}}});
+  x.api.widgetState.referencedFontAssets.ExampleRegular = {asset: {}};
+  await x.api.onSingularValue({score: '25', ExampleRegular: {fontData: {family: 'Inter', weight: '400'}}});
   assert.equal(x.api.widgetState.pendingInitialValues.score, 25);
-  assert.equal(x.api.widgetState.pendingInitialValues.rivefontExample, undefined);
+  assert.equal(x.api.widgetState.pendingInitialValues.ExampleRegular, undefined);
 });
 
 test('all three numeric transport variants preserve values without rescaling', () => {

@@ -24,7 +24,7 @@ const exposed = [
 // Each test executes the complete shipped script in a fresh browser/SDK sandbox.
 // Only external boundaries are mocked; widget handlers are never replaced.
 export function createHarness() {
-  const warnings = [], errors = [], publications = [], scripts = [], timers = new Map();
+  const warnings = [], errors = [], publications = [], scripts = [], consoleOutput = [], timers = new Map();
   const elements = new Map();
   let nextTimer = 0, callbacks;
   const makeElement = tagName => {
@@ -46,7 +46,11 @@ export function createHarness() {
       body: {prepend(element) {scripts.push(element); elements.set(element.id, element);}},
     },
     SingularWidget: sdk,
-    console: {warn: (...args) => warnings.push(args), error: (...args) => errors.push(args), info() {}, log() {}},
+    console: {
+      warn: (...args) => warnings.push(args), error: (...args) => errors.push(args),
+      ...Object.fromEntries(['info', 'log', 'table', 'groupCollapsed', 'groupEnd']
+        .map(method => [method, (...args) => consoleOutput.push({method, args})])),
+    },
     setTimeout(fn, delay) {const id = ++nextTimer; timers.set(id, {fn, delay}); return id;},
     clearTimeout(id) {timers.delete(id);},
     setInterval(fn, delay) {const id = ++nextTimer; timers.set(id, {fn, delay, interval: true}); return id;},
@@ -57,7 +61,7 @@ export function createHarness() {
   // In a browser, window.rive is also available as the global `rive`.
   Object.defineProperty(context, 'rive', {get: () => context.window.rive});
   vm.runInNewContext(`${script};globalThis.api={${exposed.join(',')}};`, context, {filename: widgetPath});
-  return {api: context.api, context, sdk, warnings, errors, publications, scripts, timers, elements,
+  return {api: context.api, context, sdk, warnings, errors, publications, scripts, consoleOutput, timers, elements,
     get callbacks() {return callbacks;},
     get fontRuntime() {return context.window.rive;},
     runTimers(delay) {

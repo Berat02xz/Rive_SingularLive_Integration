@@ -51,14 +51,14 @@
       defaultVMName: "",
       globalViewModelNames: [],
       _findVMNameForInstance: null,
-      referencedFontAssets: {},  // fieldId → { asset, assetName }
-      dataBoundFontProperties: {}, // fieldId → { accessor, propertyName, path }
-      metricFontData: {},        // fieldId → { family, weight, subset }
-      _fontApplyGeneration: {},  // fieldId → latest async apply generation
+      referencedFontAssets: Object.create(null),  // fieldId → { asset, assetName }
+      dataBoundFontProperties: Object.create(null), // fieldId → { accessor, propertyName, path }
+      metricFontData: Object.create(null),        // fieldId → { family, weight, subset }
+      _fontApplyGeneration: Object.create(null),  // fieldId → latest async apply generation
       fallbackFontWrappers: [],  // decoded fonts retained by RiveFont callback
       fallbackFontRuntime: null,
-      referencedAudioAssets: {}, // fieldId → { asset, assetName }
-      audioAssetUrls: {},        // fieldId → url string
+      referencedAudioAssets: Object.create(null), // fieldId → { asset, assetName }
+      audioAssetUrls: Object.create(null),        // fieldId → url string
 
       layoutOptions: [
         "Contain", "Cover", "Fill", "FitWidth", "FitHeight", "ScaleDown", "Layout", "None",
@@ -75,6 +75,36 @@
 
     function toAlphanumericId(str) {
       return str.replace(/[^a-zA-Z0-9]/g, "");
+    }
+
+    const reservedFieldIds = ["riveartboard", "rivestatemachineselect", "rive_file_url", "rive_layout", "rive_renderer", "show_fps"];
+
+    function registerReferencedAsset(registry, fieldId, asset) {
+      const existing = registry[fieldId];
+      const otherRegistry = registry === widgetState.referencedFontAssets
+        ? widgetState.referencedAudioAssets : widgetState.referencedFontAssets;
+      const propertyCollision = widgetState.riveReady && Object.entries(widgetState.riveProps)
+        .some(([name, prop]) => !prop.internal && (prop.fieldId || toAlphanumericId(name)) === fieldId);
+      if (!fieldId || reservedFieldIds.includes(fieldId) || otherRegistry[fieldId] ||
+          (existing && existing.assetName !== asset.name) || propertyCollision) {
+        console.error("[RiveWidget] Referenced asset field ID collision; rename the asset or property", { fieldId, assetName: asset.name });
+        return false;
+      }
+      registry[fieldId] = { asset, assetName: asset.name, fieldId };
+      // Values received before discovery cannot be classified by their names.
+      // Replay late assets outside the runtime callback; audio may reload Rive.
+      if (widgetState.riveReady && widgetState.pendingInitialValues &&
+          Object.prototype.hasOwnProperty.call(widgetState.pendingInitialValues, fieldId)) {
+        const loadGen = widgetState._loadGen;
+        setTimeout(() => {
+          if (widgetState._loadGen !== loadGen || !widgetState.riveReady) return;
+          if (widgetState.pendingInitialValues && Object.prototype.hasOwnProperty.call(widgetState.pendingInitialValues, fieldId)) {
+            onSingularValue({ [fieldId]: widgetState.pendingInitialValues[fieldId] });
+          }
+        }, 0);
+      }
+      scheduleAssetUIRefresh();
+      return true;
     }
 
     function riveColorValueToRGBA(colorValue) {
@@ -138,11 +168,7 @@
 
     function fontAssetFieldId(assetName) {
       const base = assetName.replace(/\.[^.]+$/, "");
-      return "rivefont" + base.replace(/[^a-zA-Z0-9]/g, "");
-    }
-
-    function dataBoundFontFieldId(propertyName) {
-      return "rivefontprop" + propertyName.replace(/[^a-zA-Z0-9]/g, "");
+      return toAlphanumericId(base);
     }
 
     function stableIdHash(value) {
@@ -327,12 +353,11 @@
 
     function audioAssetFieldId(assetName) {
       const base = assetName.replace(/\.[^.]+$/, "");
-      return "riveaudio" + base.replace(/[^a-zA-Z0-9]/g, "");
+      return toAlphanumericId(base);
     }
 
-    // Audio assets can be surfaced by the runtime after onLoad has already
-    // built the UI (the audio engine initializes asynchronously); regenerate
-    // so late-registered assets still get their fields.
+    // Assets can be surfaced after onLoad (notably asynchronous audio engine
+    // initialization); regenerate so late assets still get their fields.
     function scheduleAssetUIRefresh() {
       if (!widgetState.riveReady) return; // onLoad will build the UI
       clearTimeout(widgetState._assetUIRefreshTimer);
@@ -413,7 +438,7 @@
 
       try {
         if (!widgetState.referencedAudioAssets[fieldId] || widgetState.referencedAudioAssets[fieldId].asset !== capturedAsset) {
-          console.warn("[RiveWidget][audio] asset went stale before apply, skipping", fieldId);
+          // A reload replaced this asset while decoding; cancellation is expected.
           return;
         }
         capturedAsset.setAudioSource(decoded);
@@ -464,9 +489,9 @@
           if (widgetState.r) widgetState.r.cleanup();
           widgetState.r = null;
           widgetState.riveReady = false;
-          widgetState.referencedFontAssets = {};
-          widgetState.dataBoundFontProperties = {};
-          widgetState.referencedAudioAssets = {};
+          widgetState.referencedFontAssets = Object.create(null);
+          widgetState.dataBoundFontProperties = Object.create(null);
+          widgetState.referencedAudioAssets = Object.create(null);
           releaseRiveGlyphFallbackFonts();
           releaseDecodedAudioCache();
           delete window.rive;
@@ -730,7 +755,7 @@
       const normalProps = {};
       const globalProps = {};
       const vmMetadata = {};
-      widgetState.dataBoundFontProperties = {};
+      widgetState.dataBoundFontProperties = Object.create(null);
 
       let globalViewModelNames = [];
       try {
@@ -854,8 +879,8 @@
               vmName,
               rootVMName: rootName,
               internal,
-              // Retain existing Singular IDs except where paths collide.
-              fieldId: propertyType === "font" ? dataBoundFontFieldId(propKey) : toAlphanumericId(propKey),
+              // All property types use their ordinary path, including fonts.
+              fieldId: toAlphanumericId(propKey),
             };
 
             if (options.isGlobal) {
@@ -911,7 +936,11 @@
 
       const props = { ...globalProps, ...normalProps };
       const idCounts = new Map();
-      const reservedIds = new Set(["riveartboard", "rivestatemachineselect", "rive_file_url", "rive_layout", "rive_renderer", "show_fps"]);
+      const reservedIds = new Set([
+        ...reservedFieldIds,
+        ...Object.values(widgetState.referencedFontAssets).map(asset => asset.fieldId),
+        ...Object.values(widgetState.referencedAudioAssets).map(asset => asset.fieldId),
+      ]);
       for (const prop of Object.values(normalProps)) {
         if (!prop.internal) idCounts.set(prop.fieldId, (idCounts.get(prop.fieldId) || 0) + 1);
       }
@@ -1644,6 +1673,50 @@
       });
     }
 
+    function logPropertyCatalog(uiModel) {
+      const propertiesById = new Map(Object.entries(widgetState.riveProps)
+        .filter(([, prop]) => !prop.internal)
+        .map(([name, prop]) => [prop.fieldId || toAlphanumericId(name), prop]));
+      // Static configuration is retained by Singular separately from the dynamic UI.
+      const configurationFields = [
+        { id: "rive_file_url", type: "data", title: "Rive File URL" },
+        { id: "rive_layout", type: "selection", title: "Layout" },
+        { id: "rive_renderer", type: "checkbox", title: "Rive Renderer" },
+        { id: "show_fps", type: "checkbox", title: "Show FPS" },
+      ];
+      const rows = [...configurationFields, ...uiModel.fields].map(field => {
+        const prop = propertiesById.get(field.id);
+        const fontAsset = widgetState.referencedFontAssets[field.id];
+        const audioAsset = widgetState.referencedAudioAssets[field.id];
+        const asset = fontAsset || audioAsset;
+        return {
+          "Field ID": field.id,
+          "Rive type": prop ? prop.type : fontAsset ? "font" : audioAsset ? "audio" : "—",
+          "Singular control": field.type,
+          "Scope": prop
+            ? (prop.isGlobal ? (prop.parentPath ? "Global / nested" : "Global") : prop.parentPath ? "Nested" : "Artboard")
+            : fontAsset ? "Referenced font" : audioAsset ? "Referenced audio" : "Widget",
+          "View Model": prop ? (prop.globalViewModelName || prop.rootVMName || widgetState.defaultVMName || "—") : "—",
+          "Property / asset": prop ? (prop.path || prop.propertyName || field.title) : asset ? asset.assetName : field.title,
+        };
+      });
+      // Compare metadata only: changing values or reloading the same inventory is quiet.
+      const signature = JSON.stringify([widgetState.fileUrl, widgetState.artboardName, widgetState.stateMachineName, rows]);
+      if (signature === widgetState._lastPropertyCatalogSignature) return;
+
+      const label = `[RiveWidget] Properties (${rows.length} fields) | Artboard: ${widgetState.artboardName || "—"} | State machine: ${widgetState.stateMachineName || "—"}`;
+      const grouped = typeof console.groupCollapsed === "function" && typeof console.groupEnd === "function";
+      if (grouped) console.groupCollapsed(label);
+      if (typeof console.table === "function") {
+        if (!grouped) console.log(label);
+        console.table(rows);
+      } else {
+        console.log(grouped ? "Fields" : label, rows);
+      }
+      if (grouped) console.groupEnd();
+      widgetState._lastPropertyCatalogSignature = signature;
+    }
+
     function generateUIModel() {
       const fields = [];
       const globalGroupedProperties = {};
@@ -1690,6 +1763,7 @@
       addReferencedAudioFields(fields, groups);
       const uiModel = { fields, groups };
       SingularWidget.setCustomWidgetUI(uiModel);
+      logPropertyCatalog(uiModel);
     }
 
     // =========================================================================
@@ -1727,11 +1801,7 @@
 
             if (asset.isFont) {
               const fieldId = fontAssetFieldId(asset.name);
-              widgetState.referencedFontAssets[fieldId] = {
-                asset,
-                assetName: asset.name,
-                fieldId,
-              };
+              if (!registerReferencedAsset(widgetState.referencedFontAssets, fieldId, asset)) return false;
               // Start fetching immediately if font data is already available
               fetchAndApplyFont(fieldId);
               return true;
@@ -1739,11 +1809,7 @@
 
             if (asset.isAudio) {
               const fieldId = audioAssetFieldId(asset.name);
-              widgetState.referencedAudioAssets[fieldId] = {
-                asset,
-                assetName: asset.name,
-                fieldId,
-              };
+              if (!registerReferencedAsset(widgetState.referencedAudioAssets, fieldId, asset)) return false;
               const rawUrl = widgetState.audioAssetUrls[fieldId];
               const cached = rawUrl ? audioDecodedCache[normalizeAudioUrl(rawUrl)] : null;
               if (cached) {
@@ -1752,7 +1818,6 @@
               } else {
                 fetchAndApplyAudio(fieldId);
               }
-              scheduleAssetUIRefresh();
               return true;
             }
           } catch { }
@@ -1846,9 +1911,9 @@
       widgetState._loadGen = (widgetState._loadGen || 0) + 1;
       widgetState.riveReady = false;
       document.getElementById("canvas").classList.remove("ready");
-      widgetState.referencedFontAssets = {};
-      widgetState.dataBoundFontProperties = {};
-      widgetState.referencedAudioAssets = {};
+      widgetState.referencedFontAssets = Object.create(null);
+      widgetState.dataBoundFontProperties = Object.create(null);
+      widgetState.referencedAudioAssets = Object.create(null);
       if (widgetState.r) { try { widgetState.r.cleanup(); } catch {} widgetState.r = null; }
       // Decode audio before the file loads so assetLoader can apply it
       // synchronously; a newer reload supersedes this one while waiting.
@@ -1903,7 +1968,7 @@
       const changedFontIds = [];
       for (const [key, value] of Object.entries(json)) {
         if (propertyTypes.has(key) && propertyTypes.get(key) !== "font") continue;
-        if (!key.startsWith("rivefont") && !widgetState.dataBoundFontProperties[key]) continue;
+        if (!widgetState.referencedFontAssets[key] && !widgetState.dataBoundFontProperties[key]) continue;
         var _fontDataRaw = value != null ? value.fontData : undefined; const fontData = _fontDataRaw != null ? _fontDataRaw : value;
         if (!fontData || typeof fontData.family !== "string" || !fontData.family) continue;
         const incoming = {
@@ -1921,14 +1986,11 @@
           fontDataChanged = true;
           changedFontIds.push(key);
         }
-        // Before discovery, a prefix alone does not identify an asset control.
-        if (widgetState.riveReady || widgetState.referencedFontAssets[key] || widgetState.dataBoundFontProperties[key]) {
-          delete widgetState.pendingInitialValues[key];
-        }
+        delete widgetState.pendingInitialValues[key];
       }
       let audioUrlChanged = false;
       for (const [key, value] of Object.entries(json)) {
-        if (!key.startsWith("riveaudio") || propertyTypes.has(key)) continue;
+        if (!widgetState.referencedAudioAssets[key] || propertyTypes.has(key)) continue;
         // "audio" field type is undocumented — tolerate both string and object payloads
         let url = "";
         if (typeof value === "string") url = value;
@@ -1937,7 +1999,7 @@
         const changed = existing !== url;
         widgetState.audioAssetUrls[key] = url;
         if (changed && widgetState.referencedAudioAssets[key]) audioUrlChanged = true;
-        if (widgetState.riveReady || widgetState.referencedAudioAssets[key]) delete widgetState.pendingInitialValues[key];
+        delete widgetState.pendingInitialValues[key];
       }
       // Audio changes still require a reload so assetLoader can apply the decoded
       // source synchronously. Fonts are swapped live below and do not reload Rive.

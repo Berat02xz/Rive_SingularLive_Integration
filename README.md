@@ -70,11 +70,18 @@ The goal is to enable seamless use of `.riv` files as live, data-driven overlays
 
 ### V8
 
-- **Runtime:** Pinned WebGL2 and Canvas to Rive runtime `2.44.0`, which includes Rive Semantics support.
-- **Reworked View Models Controls:** Generate controls from the selected artboard's bound View Model, with nested properties and separate global View Model groups. Nested group titles show the property and child model, with the parent model in the info tooltip.
-- **Global property IDs:** Use the View Model name followed by the property path, preserving capitalization: `Globalcolor1`, `GlobalgradientAmount`, or `Globalscoreboardtitle`. Global fonts follow the same rule. Conflicting global IDs are reported and omitted instead of receiving hash suffixes; artboard property naming is unchanged.
-- **JSON binding:** Assign values using the declared Rive property type. Number properties accept decimal strings such as `"25"` and `"12.5"`; invalid numeric values such as `"aaaa"` or `"2a91"` become `0`. Boolean strings are also handled explicitly.
-- **Internal properties:** Hide properties containing `__` from the generated controls and default JSON, and protect them from public JSON writes while their Rive bindings remain active.
+- **Runtime:** WebGL2 and Canvas use Rive `2.44.0`, including Semantics support.
+- **View Model controls:** Follow the selected artboard, with clear nested groups and separate global groups.
+- **Property IDs:** Keep nesting paths and global model names: `titleFont`, `propertyOfLivetitleFont`, or `ThemetitleFont`. Capitalization is preserved.
+- **Asset IDs:** Use font/audio asset names without extensions or punctuation: `Inter-Regular.ttf` → `InterRegular`.
+- **ID conflicts:** Main/nested properties receive a hash suffix when needed. Conflicting global or asset controls are reported and omitted; rename them to expose both.
+- **Console:** A collapsed table shows exact targeting IDs, types, scope, and paths after UI generation. Updates only when the inventory or context changes; errors and useful warnings remain visible.
+- **JSON values:** Support numeric and boolean strings. Invalid numbers become `0`.
+- **Internal properties:** Names containing `__` stay hidden and protected from public writes.
+
+
+### V9
+- **Changed field id's of fonts and audio** The `rivefontprop`, `rivefont`, and `riveaudio` prefixes have been removed. Use the new IDs shown in the console table.
 
 ---
 
